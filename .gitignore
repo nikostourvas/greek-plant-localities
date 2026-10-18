@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.venv/
+# run outputs and private material never belong in the repo (outputs default to ~/greek-plant-localities)
+*.gpkg
+*.kml
+*.gpx
+*.pdf

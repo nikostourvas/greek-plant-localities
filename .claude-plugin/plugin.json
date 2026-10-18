@@ -1,0 +1,9 @@
+{
+  "name": "greek-plant-localities",
+  "description": "Find known localities of plant species in Greece (GBIF, DiSSCo Hellas, JACQ, iNaturalist, Natura 2000, Greek theses, floras) and plan field sampling.",
+  "author": { "name": "Nikos Tourvas" },
+  "homepage": "https://github.com/nikostourvas/greek-plant-localities",
+  "repository": "https://github.com/nikostourvas/greek-plant-localities",
+  "license": "MIT",
+  "keywords": ["botany", "biodiversity", "Greece", "GBIF", "herbarium", "fieldwork", "sampling"]
+}

@@ -1,0 +1,12 @@
+{
+  "name": "greek-plant-localities",
+  "owner": { "name": "Nikos Tourvas" },
+  "description": "Claude Code skill for locating plant populations in Greece.",
+  "plugins": [
+    {
+      "name": "greek-plant-localities",
+      "source": "./",
+      "description": "Find known localities of plant species in Greece and plan field sampling."
+    }
+  ]
+}
