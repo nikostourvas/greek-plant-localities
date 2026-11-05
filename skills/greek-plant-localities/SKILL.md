@@ -85,7 +85,7 @@ It writes to `<output_root>/<Genus_species>_<date>/`:
 | `<sp>.gpkg`, `<sp>.kml`, `<sp>_sites.gpx`, `report.md` | built outputs (GeoPackage for QGIS; KML for Google Earth or a phone; GPX for GPS units) |
 | `sources_log.csv` | per-source status; check it for failures |
 
-Then check `sources_log.csv`. If a source failed with a timeout or a 5xx error, re-run once with `--out <run_dir>` and `--skip` for the sources that worked. For example, `--skip occurrences,natura,text` re-runs only the literature search, and the cache makes the rest instant.
+Then check `sources_log.csv`. A host that fails 2 requests in a row (timeouts or 5xx) is skipped for the rest of the run, and the log says so. If a source failed this way, re-run once with `--out <run_dir>` and `--skip` for the sources that worked; if it fails again, list it under manual follow-ups. For example, `--skip occurrences,natura,text` re-runs only the literature search, and the cache makes the rest instant.
 
 ## Step 3: extract localities from the flora text hits
 

@@ -31,7 +31,8 @@ GREEK_ACADEMIC_DELAY = 3.0  # *.gr hosts not listed above
 
 CACHE_TTL_DAYS = 14
 # A host that is down costs ~2 min per request (timeouts and retries), times every
-# name and item type. After this many failed requests in a row, skip the host for the rest of the run.
+# name and item type. After this many failed requests in a row (timeouts or 5xx, not 429 rate
+# limits), skip the host for the rest of the run.
 HOST_DOWN_AFTER = 2
 
 _session: requests.Session | None = None
@@ -99,6 +100,7 @@ def get(url: str, params: dict | None = None, *, source: str, as_json: bool = Tr
             last_err = f"HTTP {r.status_code}"
             time.sleep(5 * (attempt + 1))
             continue
+        _failures[host] = 0  # the host answered, so it is not down
         if r.status_code >= 400:
             log(source, "error", f"HTTP {r.status_code} {full}")
             return None
@@ -115,9 +117,10 @@ def get(url: str, params: dict | None = None, *, source: str, as_json: bool = Tr
         if cache:
             cp.parent.mkdir(parents=True, exist_ok=True)
             cp.write_text(text, encoding="utf-8")
-        _failures[host] = 0
         return out
     log(source, "error", f"{last_err} {full}")
+    if last_err == "HTTP 429":
+        return None  # rate limited, not down: later requests may still succeed
     _failures[host] = _failures.get(host, 0) + 1
     if _failures[host] == HOST_DOWN_AFTER:
         log(source, "error", f"{host} failed {HOST_DOWN_AFTER} requests in a row (timeouts or 5xx): "
