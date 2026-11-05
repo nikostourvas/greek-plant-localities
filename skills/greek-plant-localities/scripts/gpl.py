@@ -5,8 +5,9 @@
 # ///
 """greek-plant-localities: find known localities of a plant species in Greece.
 
+    uv run gpl.py names "Zelkova abelicea"        # synonyms and misapplied names: review first
     uv run gpl.py run "Zelkova abelicea"          # everything, fully automatic
-    uv run gpl.py names "Zelkova abelicea"        # name resolution only
+    uv run gpl.py run "X y" --add-name "Old name" # search an extra name too (kept for re-runs)
     uv run gpl.py geocode "Omalos" "Ομαλός"       # gazetteer candidates
     uv run gpl.py build <run_dir>                 # rebuild outputs after editing literature_localities.csv
     uv run gpl.py config --email me@x.org --add-zotero "Plants of Greece"
@@ -40,10 +41,56 @@ def run_dir(species: str, out: str | None) -> Path:
     return d
 
 
+def manual_names(a, d: Path | None = None) -> tuple[list[str], list[str]]:
+    """--add-name/--drop-name, merged with the edits saved in an earlier run's names.json."""
+    prev = {}
+    if d and (d / "names.json").exists():
+        try:
+            prev = json.loads((d / "names.json").read_text(encoding="utf-8")).get("manual") or {}
+        except ValueError:
+            prev = {}
+    new_add, new_drop = a.add_name or [], a.drop_name or []
+    add = [n for n in prev.get("add", []) if n not in new_drop] + new_add
+    drop = [n for n in prev.get("drop", []) if n not in new_add] + new_drop
+    return list(dict.fromkeys(add)), sorted(set(drop))
+
+
+def names_table(nm: dict) -> str:
+    fog, gb, cl = nm["flora_of_greece"], nm["gbif"], nm["catalogue_of_life"]
+    lines = [f"Accepted: {nm['accepted_full']}  ({nm.get('family') or '?'})"]
+    if not fog.get("found"):
+        lines.append(f"WARNING: Flora of Greece does not know “{nm['query']}”; using {nm['accepted']}.")
+    if not nm.get("greek_distribution") and fog.get("found"):
+        lines.append("WARNING: Flora of Greece lists no Greek distribution for this taxon.")
+    if gb.get("found"):
+        lines.append(f"GBIF: {gb.get('accepted_full')} (taxonKey {gb.get('taxonKey')}, match {gb.get('matchType')})"
+                     + ("" if gb.get("matchType") == "EXACT" else "  WARNING: not an exact match"))
+    else:
+        lines.append("GBIF: not found")
+    lines.append(f"Catalogue of Life: {cl.get('accepted') or 'not found'}")
+    lines.append("Greek regions: " + (", ".join(a["code"] or a["area"] for a in nm.get("greek_distribution", [])) or "—"))
+    lines.append("")
+    w = max(len(r["name"]) for r in nm["name_table"]) + 2
+    k = max(len(", ".join(r["kinds"])) for r in nm["name_table"]) + 2
+    lines.append(f"{'tier':9}{'name':{w}}{'kind':{k}}sources")
+    for r in nm["name_table"]:
+        lines.append(f"{r['tier']:9}{r['name']:{w}}{', '.join(r['kinds']):{k}}{', '.join(r['sources'])}")
+    if nm.get("misapplied_names"):
+        lines += ["", "Misapplied in Greek floras (Flora of Greece):"] + [f"  {m}" for m in nm["misapplied_names"]]
+    if nm["manual"]["add"] or nm["manual"]["drop"]:
+        lines += ["", f"Added by hand: {', '.join(nm['manual']['add']) or '—'}; dropped: {', '.join(nm['manual']['drop']) or '—'}"]
+    lines += ["", f"{len(nm['search_names'])} core names (all searches), {len(nm['extended_names'])} names in total (fast searches)."]
+    return "\n".join(lines)
+
+
 def cmd_names(a):
-    res = namesmod.resolve(a.species)
-    print(json.dumps({k: v for k, v in res.items() if k not in ("flora_of_greece", "euromed", "gbif", "jacq")},
-                     indent=2, ensure_ascii=False))
+    add, drop = manual_names(a, Path(a.out).expanduser() if a.out else None)
+    res = namesmod.resolve(a.species, add=add, drop=drop)
+    if a.json:
+        print(json.dumps({k: v for k, v in res.items() if k not in ("flora_of_greece", "euromed", "gbif", "catalogue_of_life", "jacq")},
+                         indent=2, ensure_ascii=False))
+    else:
+        print(names_table(res))
 
 
 def cmd_geocode(a):
@@ -95,9 +142,11 @@ def cmd_run(a):
     skip = set((a.skip or "").split(",")) - {""}
     print(f"[gpl] output: {d}", file=sys.stderr)
 
-    nm = namesmod.resolve(a.species)
+    add, drop = manual_names(a, d)
+    nm = namesmod.resolve(a.species, add=add, drop=drop)
     (d / "names.json").write_text(json.dumps(nm, indent=2, ensure_ascii=False), encoding="utf-8")
-    print(f"[gpl] names: {nm['accepted']} + {len(nm['search_names']) - 1} synonyms", file=sys.stderr)
+    print(f"[gpl] names: {nm['accepted']} + {len(nm['search_names']) - 1} core names, "
+          f"{len(nm['extended_names'])} in total", file=sys.stderr)
 
     if "occurrences" not in skip:
         recs = occurrences.harvest(nm)
@@ -196,9 +245,16 @@ def main():
     r.add_argument("--out", help="output directory (default: <output_root>/<Species>_<date>)")
     r.add_argument("--pdf", action="append", help="extra PDF file or folder to search (repeatable)")
     r.add_argument("--skip", help="comma list: occurrences,natura,text,classic,proceedings,literature")
-    r.set_defaults(func=cmd_run)
-    n = sub.add_parser("names", help="resolve names and synonyms")
+    n = sub.add_parser("names", help="resolve names and synonyms (run this first and review the list)")
     n.add_argument("species")
+    n.add_argument("--out", help="run directory whose saved name edits to include")
+    n.add_argument("--json", action="store_true", help="print JSON instead of the review table")
+    for x in (r, n):
+        x.add_argument("--add-name", action="append", metavar="NAME",
+                       help="extra name to search in every search, e.g. one used in Greek floras (repeatable; kept for re-runs)")
+        x.add_argument("--drop-name", action="append", metavar="NAME",
+                       help="name to leave out, e.g. a homonym (repeatable; kept for re-runs)")
+    r.set_defaults(func=cmd_run)
     n.set_defaults(func=cmd_names)
     g = sub.add_parser("geocode", help="gazetteer candidates for place names")
     g.add_argument("query", nargs="+")

@@ -69,8 +69,10 @@ Generated {dt.date.today():%Y-%m-%d} by greek-plant-localities. Query: “{nm['q
 ## Names searched
 
 - **Accepted (Flora of Greece):** {nm['accepted_full']}; family {nm.get('family') or '—'}; GBIF taxonKey {nm.get('gbif_taxon_key') or '—'}
-- **Synonyms used in all searches** (Flora of Greece, Euro+Med): {', '.join(nm['search_names'][1:]) or '—'}
-- **Additional GBIF synonyms** (database and full-text searches only; may include misapplied names): {', '.join(n for n in nm.get('extended_names', [])[1:] if n not in nm['search_names']) or '—'}
+- **Names used in all searches** (Flora of Greece and Euro+Med synonyms, names misapplied in Greek floras, names added by hand): {', '.join(nm['search_names'][1:]) or '—'}
+- **Misapplied in Greek floras** (Flora of Greece; records and literature under these names refer to this taxon): {'; '.join(nm.get('misapplied_names') or []) or '—'}
+- **Additional GBIF and Catalogue of Life names** (database and full-text searches only; may include homonyms): {', '.join(n for n in nm.get('extended_names', [])[1:] if n not in nm['search_names']) or '—'}
+- **Edited by hand:** added {', '.join((nm.get('manual') or {}).get('add') or []) or '—'}; dropped {', '.join((nm.get('manual') or {}).get('drop') or []) or '—'}
 - **Greek floristic regions (Dimopoulos et al. 2013, 2016):** {regions}
 
 {START}

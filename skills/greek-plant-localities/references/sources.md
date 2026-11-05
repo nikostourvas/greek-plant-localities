@@ -9,10 +9,19 @@ All endpoints tested live with curl unless marked X (unverified / unreachable fr
 - Flora of Greece CDM **[auto]** REST API (Dimopoulos et al. 2013/2016 checklist): https://api.cybertaxonomy.org/flora-greece/
   - `portal/taxon/find?query=<name>&doTaxa=true&doSynonyms=true&pageSize=10&pageIndex=0`
   - `portal/taxon/{uuid}/synonymy`
+  - `portal/taxon/{uuid}/taxonRelationshipsDTO` → `relations` with `misapplication: true`: names misapplied to the taxon in Greek floras ("auct. fl. graec."); the name is in `taggedText` items of type `name` and `rank`. Not part of `/synonymy`.
   - `description/distributionInfoFor/{uuid}?part=tree` → presence per Greek floristic region (Pe, StE, SPi, NPi, NC, NE, IoI, EAe, WAe…)
   - No `.json` suffix (→400). Portal web UI is behind Anubis; use API host only.
 - Euro+Med **[auto]**: https://api.cybertaxonomy.org/euromed/ (same CDM API; filter results by `class`)
 - GBIF backbone **[auto]**: `https://api.gbif.org/v1/species/match?name=<name>&kingdom=Plantae` → usageKey (taxonKey includes synonyms)
+  - The backbone sometimes treats a synonym, or a name misapplied in Greek floras, as a separate taxon (e.g. *Satureja graveolens* and *Thymus graveolens* for *Acinos graveolens*). `taxonKey=<main key>` misses records filed under those, so `occurrences.gbif` also queries their keys. Keys whose `speciesKey` is the main key are already covered.
+  - Use `strict=true` and require `matchType` EXACT: "Acinos rotundifolius" otherwise matches only the genus *Acinos* (thousands of Greek records).
+- Catalogue of Life (ChecklistBank, latest release `3LR`, WCVP-based) **[auto]**, no key:
+  - `https://api.checklistbank.org/dataset/3LR/nameusage/search?q=<name>`: a synonym's usage carries its `accepted` usage
+  - `/taxon/{id}`: rank and `parentId`
+  - `/tree/{id}/children`: infraspecific taxa
+  - `/taxon/{id}/synonyms`: `homotypic`, `heterotypic`, `misapplied`
+  - WCVP often ranks a Flora of Greece species as a subspecies (e.g. *Acinos graveolens* = *Clinopodium graveolens* subsp. *graveolens*), so take the parent species and all its children.
 - JACQ names **[auto]**: `https://services.jacq.org/jacq-services/rest/JACQscinames/find/<name>`
 - WFO: https://list.worldfloraonline.org/matching_rest.php?input_string=… (broken TLS chain)
 - POWO blocks scripts (Cloudflare); use WCVP dump / rWCVP. Global Names Verifier for fuzzy matching.

@@ -1,6 +1,6 @@
 ---
 name: greek-plant-localities
-description: Find every known locality of a plant species in Greece in order to plan field sampling. Searches GBIF, the DiSSCo Hellas national herbaria node, JACQ and iNaturalist, plus Natura 2000 and Article 17 data. Also searches Greek theses (openarchives.gr, didaktorika.gr, university repositories), Plazi, OpenAlex, Zenodo, classic floras (Halácsy, Boissier), the proceedings of the Greek ecological, botanical and forestry societies, and the user's own flora PDFs and Zotero collections. Then georeferences literature localities and writes a CSV, GeoPackage, KML, GPX and Markdown report of candidate sites.
+description: Find every known locality of a plant species in Greece in order to plan field sampling. First collects all the names the taxon has been recorded under (synonyms and names misapplied in Greek floras, from Flora of Greece, Euro+Med, GBIF and the Catalogue of Life), then searches all of them in GBIF, the DiSSCo Hellas national herbaria node, JACQ and iNaturalist, plus Natura 2000 and Article 17 data. Also searches Greek theses (openarchives.gr, didaktorika.gr, university repositories), Plazi, OpenAlex, Zenodo, classic floras (Halácsy, Boissier), the proceedings of the Greek ecological, botanical and forestry societies, and the user's own flora PDFs and Zotero collections. Then georeferences literature localities and writes a CSV, GeoPackage, KML, GPX and Markdown report of candidate sites.
 when_to_use: The user wants to know where a plant (vascular plant, usually rare, endemic or threatened) grows in Greece, wants candidate populations or sampling sites, or asks to plan a sampling campaign or fieldwork for a species in Greece.
 argument-hint: "<species name>"
 allowed-tools: Bash(uv run ${CLAUDE_SKILL_DIR}/scripts/gpl.py *)
@@ -33,10 +33,38 @@ Then start `GPL corpus` in the background. It is a one-off download of the publi
 After that, never ask again; runs are fully automatic.
 The config file is `~/.config/greek-plant-localities/config.json`.
 
-## Step 1: run the automatic search
+## Step 1: find all the names first
+
+Herbarium labels, floras and theses often use old or misapplied names, so collect every name before searching.
 
 ```bash
-GPL run "Genus species [subsp. x]"     # add --pdf <file|dir> for one-off extra PDFs
+GPL names "Genus species [subsp. x]"
+```
+
+It prints the accepted name (Flora of Greece) and a table of every name with its kind and source:
+- **core** names are used by every search, including the slow Greek repository searches:
+  - Flora of Greece and Euro+Med synonyms
+  - names that Flora of Greece says were **misapplied in Greek floras** ("auct. fl. graec."). Greek literature and herbaria often file the taxon under exactly these names, e.g. *Acinos rotundifolius* and *Calamintha exigua* for *Acinos graveolens*.
+- **extended** names are used only by the fast searches (GBIF, DiSSCo Hellas, JACQ, Natura 2000, full text): GBIF and Catalogue of Life (WCVP) synonyms, including the synonyms of subspecies.
+
+Review the list:
+- **Warnings.** If Flora of Greece does not know the name, or GBIF's match is not `EXACT`, tell the user which name is used. If Flora of Greece gives no Greek distribution, say so but continue.
+- **Add missing names** with `--add-name "<name>"` (repeatable):
+  - every name the user gave
+  - names you can source as used for this taxon in Greek literature but missing from the table, e.g. a combination used by Halácsy, Boissier or Hayek, the Flora Europaea or Med-Checklist name, or a recent recombination.
+
+  Don't add names from memory alone. Say where each added name comes from.
+- **Drop** with `--drop-name "<name>"` an extended name that clearly belongs to another taxon that is common in Greece (a homonym). Such a name would flood the text hits.
+- To preview a change, run `GPL names "<species>" --add-name ... --drop-name ...`.
+
+Then tell the user in one or two lines which names will be searched: the accepted name, how many synonyms, the misapplied names, and anything you added. Continue without waiting for an answer.
+
+Added and dropped names are saved in the run directory's `names.json` and reused by later runs into the same directory, so pass them once.
+
+## Step 2: run the automatic search
+
+```bash
+GPL run "Genus species [subsp. x]" [--add-name "..."] [--drop-name "..."]   # add --pdf <file|dir> for one-off extra PDFs
 ```
 
 Run it in the background. It takes about 5–25 minutes because Greek repositories are queried slowly on purpose (they block fast clients). The first run takes about 10 minutes longer if `GPL corpus` has not finished. HTTP responses are cached for 14 days, so re-runs are fast.
@@ -45,36 +73,34 @@ It writes to `<output_root>/<Genus_species>_<date>/`:
 
 | file | content |
 |---|---|
-| `names.json` | accepted name, synonyms, Greek floristic regions (Flora of Greece), GBIF key |
+| `names.json` | accepted name; every searched name with its kind and source (`name_table`); names added or dropped by hand; Greek floristic regions (Flora of Greece); GBIF key |
 | `occurrences.csv` | GBIF + DiSSCo Hellas + JACQ + iNaturalist records in one schema; `dup_group`/`is_primary` mark duplicates |
 | `natura2000_sites.csv` | Natura 2000 sites whose Standard Data Form lists the species (population, data quality) |
 | `art17_grid.geojson` | Article 17 2019–2024 10 km distribution (Habitats Directive species only) |
 | `text_hits.md` / `.json` | passages that mention any of the names, from: the user's flora PDFs and Zotero; Halácsy and Boissier; the proceedings of HELECOS and the Hellenic Botanical and Forestry Societies; and ΓΕΩΤΕΕ |
 | `leads.csv` | theses, papers, treatments and datasets that mention the species |
-| `literature_localities.csv` | **empty; you fill it** (steps 2–4) |
+| `literature_localities.csv` | **empty; you fill it** (steps 3–5) |
 | `candidate_sites.csv` | 1 km clusters of precise records: candidate sampling sites |
 | `candidate_areas.csv` | 10 km clusters including generalised records: where the species is known but no precise site is published |
 | `<sp>.gpkg`, `<sp>.kml`, `<sp>_sites.gpx`, `report.md` | built outputs (GeoPackage for QGIS; KML for Google Earth or a phone; GPX for GPS units) |
 | `sources_log.csv` | per-source status; check it for failures |
 
-Before going on, check `names.json`:
-- If Flora of Greece did not find the taxon (`flora_of_greece.found` is false), or GBIF's `matchType` is not `EXACT`, tell the user which name was used.
-- If the species is not in Greece according to Flora of Greece, say so but continue.
-
 Then check `sources_log.csv`. If a source failed with a timeout or a 5xx error, re-run once with `--out <run_dir>` and `--skip` for the sources that worked. For example, `--skip occurrences,natura,text` re-runs only the literature search, and the cache makes the rest instant.
 
-## Step 2: extract localities from the flora text hits
+## Step 3: extract localities from the flora text hits
 
 Read `text_hits.md`. Each block is a passage that starts at a mention of the species. For each block:
 - **Is it the species' own entry,** or only a mention, such as "in *Abies cephalonica* woodland" in another species' habitat? Skip mentions.
+- **Is the name used for this taxon?** A misapplied name refers to it only in Greek floras. Elsewhere, for example *Acinos exiguus* in Cyprus, it is the other taxon. A homonym among the extended names can also match an unrelated plant.
+- **A name missing from the list?** Floras, Halácsy and Boissier above all, sometimes file the taxon under a name that is not in `names.json`. Search it too with `GPL run "<species>" --out <run_dir> --add-name "<name>"`. Cached queries replay instantly, so only the new name is actually queried.
 - **Pull out every locality.** In the Strid floras, localities are listed by region (PELOPONNISOS:, STEREA ELLAS:, S PINDHOS: …), usually as mountain names. A `!` means the authors saw a specimen. Note the altitude range and habitat; they help you place points.
 - **For Halácsy and Boissier:** these give 19th-century localities with the collector, e.g. "Heldr.!" or "Orph.!". They are valuable for finding historic populations again.
-- **Add one row per locality to `literature_localities.csv`.** Columns: `locality, latitude, longitude, uncertainty_m, georef_method, source_ref, page, year, collector_or_author, notes`. Georeference as described in step 4.
+- **Add one row per locality to `literature_localities.csv`.** Columns: `locality, latitude, longitude, uncertainty_m, georef_method, source_ref, page, year, collector_or_author, notes`. Georeference as described in step 5.
 
 Many hits are long. Read the context in full; locality lists often come after a long description.
 For widespread species `text_hits.md` can be large. Read it in parts (it is grouped by source), floras first, then proceedings.
 
-## Step 3: work through the literature leads
+## Step 4: work through the literature leads
 
 Open `leads.csv`.
 
@@ -98,7 +124,7 @@ For a rare taxon, look at every lead. For a widespread one, look at the top 30�
 
 Add the localities you extract to `literature_localities.csv`. Put the reference in `source_ref`, e.g. "Kozlowski 2012 MSc AUTH" or "Strid & Tan 1986: 123".
 
-## Step 4: georeferencing
+## Step 5: georeferencing
 
 For records without coordinates (literature rows, and the important coordinate-less rows in `occurrences.csv`):
 
@@ -119,7 +145,7 @@ For records without coordinates (literature rows, and the important coordinate-l
 5. **Record the method** in `georef_method`, e.g. "GeoNames 262178 summit; radius = massif".
 6. **Never invent coordinates.** If you cannot place a locality with confidence, leave latitude and longitude empty; the row still appears in the report.
 
-## Step 5: build and write the synthesis
+## Step 6: build and write the synthesis
 
 ```bash
 GPL build <run_dir>

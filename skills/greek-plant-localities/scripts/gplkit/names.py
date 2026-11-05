@@ -1,9 +1,14 @@
 """Name resolution: accepted name, synonyms and Greek distribution.
 
 Sources: Flora of Greece (Dimopoulos et al. 2013, 2016 checklist, CDM API),
-Euro+Med PlantBase (same API), GBIF backbone, JACQ. The union of all names is
-what every later search uses, because old herbarium labels and theses often
+Euro+Med PlantBase (same API), GBIF backbone, Catalogue of Life (WCVP
+synonymy, including that of infraspecific taxa), JACQ. The union of all names
+is what every later search uses, because old herbarium labels and theses often
 use synonyms.
+
+Flora of Greece also lists names misapplied to the taxon in Greek floras
+("auct. fl. graec."). Older Greek literature and herbaria file the taxon under
+exactly these names, so they are searched like synonyms.
 """
 from __future__ import annotations
 
@@ -14,6 +19,7 @@ from . import net
 FOG = "https://api.cybertaxonomy.org/flora-greece"
 EUROMED = "https://api.cybertaxonomy.org/euromed"
 GBIF = "https://api.gbif.org/v1"
+COL = "https://api.checklistbank.org/dataset/3LR"  # latest Catalogue of Life release
 JACQ = "https://services.jacq.org/jacq-services/rest"
 
 def canonical(name: str) -> str:
@@ -75,6 +81,7 @@ def _cdm(base: str, name: str, label: str) -> dict:
     _walk_titles(syn, "Synonym", titles)
     out["synonyms_full"] = sorted({re.sub(r"\s+(syn\.\s+)?sec\..*$", "", t) for t in titles})
     out["synonyms"] = sorted({canonical(t) for t in titles} - {out["accepted"]})
+    out["misapplied"] = _misapplied(base, taxon["uuid"], label)
     dist = net.get(f"{base}/description/distributionInfoFor/{taxon['uuid']}", {"part": "tree"}, source=label)
     areas = []
 
@@ -88,7 +95,72 @@ def _cdm(base: str, name: str, label: str) -> dict:
     if dist and dist.get("tree"):
         walk(dist["tree"]["rootElement"])
     out["distribution"] = areas
-    net.log(label, "ok", out["accepted"], len(out["synonyms"]))
+    net.log(label, "ok", out["accepted"], len(out["synonyms"]) + len(out["misapplied"]))
+    return out
+
+
+def _misapplied(base: str, uuid: str, label: str) -> list[dict]:
+    """Names misapplied to the taxon (CDM 'misapplied for' relations), e.g.
+    "Acinos rotundifolius auct. fl. graec., non Pers."."""
+    d = net.get(f"{base}/portal/taxon/{uuid}/taxonRelationshipsDTO", source=label) or {}
+    out = []
+    for r in d.get("relations") or []:
+        if not r.get("misapplication"):
+            continue
+        tt = r.get("taggedText") or []
+        name = " ".join(t["text"] for t in tt if t.get("type") in ("name", "rank") and t.get("text"))
+        if name:
+            full = re.sub(r'^\W+', "", (r.get("cache") or name).replace('"', "")).strip()
+            out.append({"name": name, "full": full, "doubtful": bool(r.get("doubtful"))})
+    return out
+
+
+def col(candidates: list[str], species_level: bool) -> dict:
+    """Catalogue of Life (WCVP-based) synonymy of the taxon and of its infraspecific taxa.
+
+    WCVP often ranks a Flora of Greece species as a subspecies (or the reverse),
+    so for a species query the parent species and all its children are used."""
+    out = {"source": "Catalogue of Life", "found": False}
+    usage = None
+    for q in candidates:
+        d = net.get(f"{COL}/nameusage/search", {"q": q, "limit": 20}, source="Catalogue of Life") or {}
+        for r in d.get("result", []):
+            u = r.get("usage") or {}
+            if (u.get("name") or {}).get("scientificName", "").lower() != q.lower():
+                continue
+            if "synonym" in (u.get("status") or ""):
+                u = u.get("accepted") or {}
+            elif u.get("status") not in ("accepted", "provisionally accepted"):
+                continue
+            if u.get("id"):
+                usage = u
+                break
+        if usage:
+            break
+    if not usage:
+        net.log("Catalogue of Life", "not_found", candidates[0] if candidates else "")
+        return out
+    taxon = net.get(f"{COL}/taxon/{usage['id']}", source="Catalogue of Life") or {}
+    if species_level and (taxon.get("name") or {}).get("rank") not in (None, "species") and taxon.get("parentId"):
+        taxon = net.get(f"{COL}/taxon/{taxon['parentId']}", source="Catalogue of Life") or taxon
+    tid = taxon.get("id") or usage["id"]
+    accepted = (taxon.get("name") or {}).get("scientificName") or (usage.get("name") or {}).get("scientificName")
+    ids = {tid: accepted}
+    kids = net.get(f"{COL}/tree/{tid}/children", {"limit": 100}, source="Catalogue of Life") or {}
+    for k in kids.get("result") or []:
+        if k.get("id") and k.get("name"):
+            ids[k["id"]] = k["name"]
+    syns, misapplied = set(), set()
+    for i in ids:
+        s = net.get(f"{COL}/taxon/{i}/synonyms", source="Catalogue of Life") or {}
+        for kind in ("homotypic", "heterotypic", "misapplied"):
+            for u in s.get(kind) or []:
+                n = (u.get("name") or {}).get("scientificName") if isinstance(u, dict) else None
+                if n:
+                    (misapplied if kind == "misapplied" or u.get("status") == "misapplied" else syns).add(n)
+    out.update(found=True, id=tid, accepted=accepted, infraspecific=sorted(set(ids.values()) - {accepted}),
+               synonyms=sorted(syns - {accepted}), misapplied=sorted(misapplied))
+    net.log("Catalogue of Life", "ok", f"{accepted} id={tid}", len(syns) + len(ids) - 1)
     return out
 
 
@@ -124,38 +196,85 @@ def jacq(name: str) -> dict:
     return {"source": "JACQ", "found": bool(ids), "raw": ids[:5]}
 
 
-def resolve(name: str) -> dict:
+def resolve(name: str, add=(), drop=()) -> dict:
+    """All names to search for a taxon.
+
+    search_names (core) are curated and used by every search, including the slow,
+    throttled Greek repository searches: Flora of Greece and Euro+Med synonyms,
+    names misapplied in Greek floras, and names added by hand (`add`).
+    extended_names add the GBIF and Catalogue of Life synonyms and infraspecific
+    names, for the fast searches (full text, GBIF, DiSSCo, JACQ, Natura 2000).
+    These lists may contain homonyms; text hits are reviewed by Claude.
+    Names in `drop` are removed from both.
+    """
     name = " ".join(name.split())
+    add = [" ".join(n.split()) for n in add if n.strip()]
+    drop = {" ".join(n.split()) for n in drop if n.strip()}
     fog = _cdm(FOG, name, "Flora of Greece")
     em = _cdm(EUROMED, fog.get("accepted", name), "Euro+Med")
     gb = gbif(fog.get("accepted", name))
     accepted = fog.get("accepted") or em.get("accepted") or gb.get("accepted") or canonical(name)
+    cands = list(dict.fromkeys(n for n in (accepted, em.get("accepted"), gb.get("accepted"), canonical(name)) if n))
+    cl = col(cands, species_level=len(accepted.split()) == 2)
 
     def usable(n):  # binomials, or trinomials with an explicit rank (GBIF's rank-less trinomials never occur in text)
         t = n.split()
         return len(t) == 2 or (len(t) >= 4 and t[2] in ("subsp.", "var.", "f."))
 
-    # core: curated synonymy (Flora of Greece, Euro+Med), used by the slow, throttled repository searches
-    core = {canonical(name), accepted}
+    table: dict[str, dict] = {}
+
+    def note(n, source, kind, tier):
+        if not n or (source != "added by hand" and not usable(n)):
+            return
+        e = table.setdefault(n, {"name": n, "sources": [], "kinds": [], "tier": tier})
+        if source not in e["sources"]:
+            e["sources"].append(source)
+        if kind not in e["kinds"]:
+            e["kinds"].append(kind)
+        if tier == "core":
+            e["tier"] = "core"
+
+    # without a curated (Flora of Greece / Euro+Med) synonymy, the GBIF and COL synonyms become core
+    curated = fog.get("found") or em.get("found")
+    note(canonical(name), "query", "query", "core")
     for src in (fog, em):
-        core |= set(src.get("synonyms", []))
         if src.get("accepted"):
-            core.add(src["accepted"])
-    if not fog.get("found") and not em.get("found"):
-        core |= set(gb.get("synonyms", []))
-    # extended: + GBIF synonyms, used by fast searches (full text, DiSSCo, JACQ, Natura 2000).
-    # GBIF lists may contain homonyms/misapplied names; text hits are reviewed by Claude.
-    extended = core | set(gb.get("synonyms", [])) | ({gb["accepted"]} if gb.get("accepted") else set())
-    core = sorted(n for n in core if n and usable(n) and n != accepted)
-    extended = sorted(n for n in extended if n and usable(n) and n != accepted)
+            note(src["accepted"], src["source"], "accepted", "core")
+        for n in src.get("synonyms", []):
+            note(n, src["source"], "synonym", "core")
+    for m in fog.get("misapplied", []):
+        note(m["name"], "Flora of Greece", "misapplied in Greek floras", "core")
+    for m in em.get("misapplied", []):
+        note(m["name"], "Euro+Med", "misapplied", "extended")
+    if gb.get("accepted"):
+        note(gb["accepted"], "GBIF", "accepted", "extended")
+    for n in gb.get("synonyms", []):
+        note(n, "GBIF", "synonym", "extended" if curated else "core")
+    if cl.get("found"):
+        note(cl["accepted"], "Catalogue of Life", "accepted", "extended")
+        for n in cl.get("infraspecific", []):
+            note(n, "Catalogue of Life", "infraspecific taxon", "extended")
+        for n in cl.get("synonyms", []):
+            note(n, "Catalogue of Life", "synonym", "extended" if curated else "core")
+        for n in cl.get("misapplied", []):
+            note(n, "Catalogue of Life", "misapplied", "extended")
+    for n in add:
+        note(n, "added by hand", "added by hand", "core")
+    for n in drop | {accepted}:
+        table.pop(n, None)
+    rows = sorted(table.values(), key=lambda e: (e["tier"] != "core", e["name"]))
     genus, epithet = accepted.split()[:2]
     return {
         "query": name,
         "accepted": accepted,
         "accepted_full": fog.get("accepted_full") or gb.get("accepted_full") or accepted,
         "family": gb.get("family"),
-        "search_names": [accepted] + core,
-        "extended_names": [accepted] + extended,
+        "search_names": [accepted] + [e["name"] for e in rows if e["tier"] == "core"],
+        "extended_names": [accepted] + [e["name"] for e in rows],
+        "misapplied_names": [m["full"] for m in fog.get("misapplied", [])],
+        "name_table": [{"name": accepted, "sources": ["Flora of Greece" if fog.get("found") else "resolved"],
+                        "kinds": ["accepted"], "tier": "core"}] + rows,
+        "manual": {"add": add, "drop": sorted(drop)},
         "gbif_taxon_key": gb.get("taxonKey"),
         "genus": genus,
         "epithet": epithet,
@@ -163,5 +282,6 @@ def resolve(name: str) -> dict:
         "flora_of_greece": fog,
         "euromed": em,
         "gbif": gb,
+        "catalogue_of_life": cl,
         "jacq": jacq(accepted),
     }

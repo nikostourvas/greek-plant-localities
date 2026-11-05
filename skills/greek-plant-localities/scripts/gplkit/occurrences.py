@@ -54,6 +54,35 @@ def _gbif_page(params: dict, label: str):
     return out, (page or {}).get("count")
 
 
+def _gbif_other_keys(names: dict, key: int) -> dict[int, str]:
+    """GBIF keys, outside the main taxon, of names we search: records filed under
+    them are missed by taxonKey=<main key>. This happens when GBIF treats a
+    synonym or a name misapplied in Greek floras as a separate taxon (e.g.
+    Satureja graveolens, Thymus graveolens for Acinos graveolens).
+
+    Only exact species-level matches count ("Acinos rotundifolius" matches just
+    the genus Acinos). A key is used only if GBIF files the name under one of our
+    names, or if the name is curated (Flora of Greece synonym, misapplied in
+    Greek floras, or added by hand): a homonym such as Melissa graveolens Host
+    (= M. officinalis) would otherwise bring in another species."""
+    wanted = {n.lower() for n in names["extended_names"]}
+    curated = set(names["search_names"])
+    out = {}
+    for n in names["extended_names"][1:]:
+        m = net.get("https://api.gbif.org/v1/species/match", {"name": n, "kingdom": "Plantae", "strict": "true"},
+                    source="GBIF (other names)")
+        if not m or m.get("matchType") != "EXACT" or m.get("rank") not in ("SPECIES", "SUBSPECIES", "VARIETY", "FORM"):
+            continue
+        k, acc = m.get("usageKey"), m.get("acceptedUsageKey") or m.get("usageKey")
+        if key in (k, acc, m.get("speciesKey")):
+            continue  # already covered by taxonKey=<main key>
+        if (m.get("species") or "").lower() in wanted:
+            out.setdefault(acc, n)  # GBIF files the name under one of our names: take that whole taxon
+        elif n in curated:
+            out.setdefault(k, n)  # curated name GBIF files elsewhere: only the records under this name
+    return out
+
+
 def gbif(names: dict) -> list[dict]:
     key = names.get("gbif_taxon_key")
     if not key:
@@ -66,6 +95,19 @@ def gbif(names: dict) -> list[dict]:
     extra, _ = _gbif_page({"taxonKey": key, "geometry": GREECE_WKT}, "GBIF (no country code)")
     seen = {r["key"] for r in recs}
     recs += [r for r in extra if r["key"] not in seen and r.get("countryCode") in (None, "", "ZZ")]
+    via = {}
+    for k, n in _gbif_other_keys(names, key).items():
+        c = (net.get("https://api.gbif.org/v1/occurrence/search", {"taxonKey": k, "country": "GR", "limit": 0},
+                     source="GBIF (other names)") or {}).get("count", 0)
+        if c > max(500, 3 * (count or 0)):
+            net.log("GBIF (other names)", "skipped", f"'{n}' (taxonKey {k}): {c} Greek records, too many for a synonym; check by hand")
+            continue
+        more, _ = _gbif_page({"taxonKey": k, "country": "GR"}, "GBIF (other names)") if c else ([], 0)
+        new = [r for r in more if r["key"] not in seen]
+        seen |= {r["key"] for r in new}
+        recs += new
+        via |= {r["key"]: n for r in new}
+        net.log("GBIF (other names)", "ok", f"'{n}' taxonKey={k}", len(new))
     out = []
     for r in recs:
         issues = r.get("issues") or []
@@ -81,7 +123,8 @@ def gbif(names: dict) -> list[dict]:
             longitude=r.get("decimalLongitude"), uncertainty_m=r.get("coordinateUncertaintyInMeters"),
             coords_generalised="yes" if r.get("dataGeneralizations") or "COORDINATE_ROUNDED" in issues else "",
             license=r.get("license"),
-            notes="; ".join(filter(None, [r.get("datasetName"), ",".join(issues)])),
+            notes="; ".join(filter(None, [r.get("datasetName"), ",".join(issues),
+                                          f"found via the name '{via[r['key']]}'" if r["key"] in via else ""])),
         ))
     net.log("GBIF", "ok", f"taxonKey={key}", len(out))
     return out
@@ -173,10 +216,19 @@ INAT_GREECE = 7094
 
 
 def inaturalist(names: dict) -> list[dict]:
-    t = net.get(f"{INAT}/taxa", {"q": names["accepted"], "is_active": "true", "per_page": 10}, source="iNaturalist")
-    taxa = [x for x in (t or {}).get("results", []) if x.get("name", "").lower() == names["accepted"].lower()]
+    # iNaturalist may accept another name (e.g. Clinopodium graveolens for Acinos graveolens):
+    # take its taxon if its name is any of ours, trying the names other checklists accept too
+    wanted = {n.lower() for n in names["extended_names"]}
+    queries = dict.fromkeys(n for n in (names["accepted"], (names.get("gbif") or {}).get("accepted"),
+                                        (names.get("catalogue_of_life") or {}).get("accepted")) if n)
+    taxa = []
+    for q in queries:
+        t = net.get(f"{INAT}/taxa", {"q": q, "is_active": "true", "per_page": 10}, source="iNaturalist")
+        taxa = [x for x in (t or {}).get("results", []) if x.get("name", "").lower() in wanted]
+        if taxa:
+            break
     if not taxa:
-        net.log("iNaturalist", "not_found", names["accepted"])
+        net.log("iNaturalist", "not_found", ", ".join(queries))
         return []
     tid = taxa[0]["id"]
     out, page = [], 1

@@ -4,7 +4,11 @@ A [Claude Code](https://claude.com/claude-code) skill that finds every known loc
 
 Give it a species name (`/greek-plant-localities:greek-plant-localities Zelkova abelicea`, or just ask "where can I sample *Zelkova abelicea* in Greece?"). It then:
 
-1. **Resolves the name** with the Flora of Greece checklist (Dimopoulos et al. 2013, 2016), Euro+Med and the GBIF backbone. All synonyms are used in every later search.
+1. **Finds every name first.** It collects:
+   - the synonyms from the Flora of Greece checklist (Dimopoulos et al. 2013, 2016), Euro+Med, the GBIF backbone and the Catalogue of Life (WCVP, including the synonyms of subspecies)
+   - the names Flora of Greece lists as misapplied in Greek floras ("auct. fl. graec."), which older Greek literature and herbaria often use
+
+   Claude reviews the list and can add names, for example ones you mention or ones used by Halácsy. Every name is then used in the searches below.
 2. **Collects specimens and observations** from:
    - [GBIF](https://www.gbif.org), including records that lack a country code
    - [DiSSCo Hellas](https://dissco-gr.nhmc.uoc.gr), the Greek national herbaria (ATHU, TAU, ATH/Goulandris, NHMC, MAICH), which are not in GBIF

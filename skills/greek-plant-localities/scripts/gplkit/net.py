@@ -30,9 +30,13 @@ DEFAULT_DELAY = 1.0
 GREEK_ACADEMIC_DELAY = 3.0  # *.gr hosts not listed above
 
 CACHE_TTL_DAYS = 14
+# A host that is down costs ~2 min per request (timeouts and retries), times every
+# name and item type. After this many failed requests in a row, skip the host for the rest of the run.
+HOST_DOWN_AFTER = 2
 
 _session: requests.Session | None = None
 _last_hit: dict[str, float] = {}
+_failures: dict[str, int] = {}
 LOG: list[dict] = []
 
 
@@ -80,6 +84,8 @@ def get(url: str, params: dict | None = None, *, source: str, as_json: bool = Tr
         return json.loads(text) if as_json else text
 
     host = urllib.parse.urlparse(full).netloc
+    if _failures.get(host, 0) >= HOST_DOWN_AFTER:
+        return None
     last_err = ""
     for attempt in range(retries + 1):
         _throttle(host)
@@ -109,6 +115,11 @@ def get(url: str, params: dict | None = None, *, source: str, as_json: bool = Tr
         if cache:
             cp.parent.mkdir(parents=True, exist_ok=True)
             cp.write_text(text, encoding="utf-8")
+        _failures[host] = 0
         return out
     log(source, "error", f"{last_err} {full}")
+    _failures[host] = _failures.get(host, 0) + 1
+    if _failures[host] == HOST_DOWN_AFTER:
+        log(source, "error", f"{host} failed {HOST_DOWN_AFTER} requests in a row (timeouts or 5xx): "
+                             "skipped for the rest of this run; re-run later with --out and --skip")
     return None
