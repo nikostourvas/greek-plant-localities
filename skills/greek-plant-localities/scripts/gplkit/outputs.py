@@ -405,17 +405,20 @@ ICONS = {"": "placemark_circle", "_nov": "open-diamond"}  # style suffix "_nov":
 ICON_FOR = {"dna": "star"}
 
 
-def _placemark(name, desc, lat, lon, style):
-    return (f"<Placemark><name>{escape(str(name))}</name><styleUrl>#{style}</styleUrl>"
+def _placemark(name, desc, lat, lon, style, visible=True):
+    return (f"<Placemark><name>{escape(str(name))}</name>{'' if visible else '<visibility>0</visibility>'}<styleUrl>#{style}</styleUrl>"
             f"<description>{escape(str(desc))}</description>"
             f"<Point><coordinates>{lon},{lat},0</coordinates></Point></Placemark>")
 
 
-def write_kml(path: Path, title: str, folders: dict[str, list[tuple[str, str, float, float, str]]]) -> None:
+def write_kml(path: Path, title: str, folders: dict[str, list[tuple[str, str, float, float, str]]],
+              hidden=()) -> None:
+    """`hidden`: folders that start switched off (e.g. data from other countries)."""
     styles = "".join(f'<Style id="{k}{suf}"><IconStyle><color>{v}</color><scale>{1.2 if k == "site" else 0.8}</scale>'
                      f'<Icon><href>http://maps.google.com/mapfiles/kml/shapes/{ICON_FOR.get(k, icon)}.png</href></Icon>'
                      f'</IconStyle></Style>' for k, v in STYLE.items() for suf, icon in ICONS.items())
-    body = "".join(f"<Folder><name>{escape(fname)}</name>" + "".join(_placemark(*p) for p in pms) + "</Folder>"
+    body = "".join(f"<Folder><name>{escape(fname)}</name>" + ("<visibility>0</visibility>" if fname in hidden else "")
+                   + "".join(_placemark(*p, visible=fname not in hidden) for p in pms) + "</Folder>"
                    for fname, pms in folders.items())
     path.write_text('<?xml version="1.0" encoding="UTF-8"?><kml xmlns="http://www.opengis.net/kml/2.2"><Document>'
                     f"<name>{escape(title)}</name><description>{escape(LEGEND)}</description>{styles}{body}</Document></kml>",

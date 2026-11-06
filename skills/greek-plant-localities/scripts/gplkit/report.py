@@ -45,22 +45,26 @@ def _genetic_section(sites, seqs, ggbn, leads) -> str:
     by_origin = collections.Counter(q.get("origin") or "?" for q in seqs)
     seq_sites = [s for s in sites if s.get("sequence_ids")]
     rank = {"Greece": 0, "Greece (publication)": 1, "possibly Greece (coordinates)": 2, "unknown": 3}
-    check = sorted((q for q in seqs if not q.get("site_ids")), key=lambda q: rank.get(q.get("origin"), 4))
+    check = sorted((q for q in seqs if not q.get("site_ids") and q.get("origin") != "foreign"),
+                   key=lambda q: rank.get(q.get("origin"), 4))
+    abroad = collections.Counter((q.get("country") or "?").split(":")[0].strip() for q in seqs if q.get("origin") == "foreign")
     gen_leads = [l for l in leads or [] if l.get("genetic") == "yes" or is_genetic(l)]
     g = "; ".join(f"{k}: {', '.join(f'{t} {n}' for t, n in v.items())}" for k, v in (ggbn or {}).items()) or "—"
     return f"""## Genetic data
 
-Sequences, read runs and assemblies in ENA/GenBank (INSDC) and barcodes in BOLD, from Greece or of unknown origin
-(records from other countries are left out). Also in `sequences.csv`, the GeoPackage layer `sequences` and the KML.
+Sequences, read runs and assemblies in ENA/GenBank (INSDC) and barcodes in BOLD, worldwide; `origin` says whether
+they come from Greece. All are in `sequences.csv` and the GeoPackage layer `sequences`; in the KML, those from other
+countries are in a folder that starts switched off.
 
 - **By source:** {', '.join(f'{k} {v}' for k, v in by_kind.most_common()) or 'none found'}
 - **Markers:** {', '.join(f'{k} {v}' for k, v in by_marker.most_common()) or '—'}
 - **Origin:** {', '.join(f'{k} {v}' for k, v in by_origin.most_common()) or '—'}. "Greece (publication)" means the record has no country or coordinates but its publication's title names Greece or a Greek place.
+- **From other countries:** {', '.join(f'{k} {v}' for k, v in abroad.most_common()) or 'none'}.
 - **Sites with sequences:** {len(seq_sites)} of {len(sites)} candidate sites (columns `markers`, `sequence_ids`; a sequence counts for a site if it comes from one of the site's records or lies within 1 km).
 - **DNA and tissue banks (GGBN, per genus; no localities):** {g}. Search https://www.ggbn.org/ggbn_portal/ for the samples.
 
 {_md_table(seq_sites, ["site_id", "markers", "n_sequences", "sequence_ids", "herbaria", "example_locality"], 60)}
-### Sequences not at a candidate site ({len(check)})
+### Sequences from Greece or of unknown origin not at a candidate site ({len(check)})
 
 Greek ones first. Some come from a record with generalised coordinates (`linked_records`); for the others, read the
 publication or the voucher to find where they were collected.

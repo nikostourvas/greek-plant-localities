@@ -71,6 +71,7 @@ All endpoints tested live with curl unless marked X (unverified / unreachable fr
 - ENA taxonomy `ena/taxonomy/rest/any-name/<name>` does not resolve synonyms (Acinos graveolens → nothing; Clinopodium graveolens → 751796), so every core name is looked up.
 - BOLD v5 public portal API: `portal.boldsystems.org/api/query/preprocessor?query=tax:<name>` → `api/query?query=<matched>&extent=full` → `query_id` → `api/documents/<query_id>/download?format=tsv`. The v4 API (`v4.boldsystems.org/index.php/API_Public/...`) is offline. BOLD mines GenBank (process IDs `GBxxx`): de-duplicated against ENA via `insdc_acs`. BOLDconnectR (R) needs an API key; the portal API does not.
 - GBIF: `isSequenced=true`; DNA-derived-data extension (`target_gene` = MIxS 0000044) and GGBN extensions (`dwcaExtension=http://data.ggbn.org/schemas/ggbn/terms/MaterialSample`) mark sequenced records and DNA-bank samples; `fieldNumber` matches BOLD `fieldid`.
+- Origin of INSDC records: the `country` field is free-ish text. Placeholders ("missing", "not collected") mean unknown; localities also end up there ("Avdou", a village on Crete), so a value that is not a country name (GBIF's country list plus INSDC spellings such as USA, Russia, Turkey) is looked up in Nominatim within Greece.
 - GGBN API (`www.ggbn.org/ggbn_portal/api/search?getSampletype&name=<genus>`): counts only, no records; species names unknown to GGBN return an HTML page.
 
 ## 2. Conservation / monitoring

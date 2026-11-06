@@ -167,7 +167,9 @@ def cmd_run(a):
         seqs, ggbn = genetic.harvest(nm)
         outputs.write_csv(d / "sequences.csv", seqs, SEQ_FIELDS)
         (d / "ggbn.json").write_text(json.dumps(ggbn, indent=1), encoding="utf-8")
-        print(f"[gpl] genetic data: {len(seqs)} sequences, runs or assemblies (Greece or unknown origin)", file=sys.stderr)
+        n_gr = sum(1 for q in seqs if q["origin"] != "foreign")
+        print(f"[gpl] genetic data: {len(seqs)} sequences, runs or assemblies ({n_gr} from Greece or of unknown origin)",
+              file=sys.stderr)
     if "text" not in skip:
         hits = textsearch.search(nm, extra_paths=a.pdf or [], classic="classic" not in skip,
                                  proceedings="proceedings" not in skip)
@@ -268,6 +270,11 @@ def build(d: Path):
                                             "pin placed from the locality text" if r["precision"] == "placed" else "",
             f"DNA: {r['sequences']}" if r.get("sequences") else ""] if x)
 
+    def seq_desc(q):
+        return " | ".join(filter(None, [f"{q.get('marker')} ({q.get('source')} {q.get('kind')})", q.get("origin"),
+                                        q.get("country"), q.get("specimen_voucher"), q.get("collector"),
+                                        q.get("collection_date"), q.get("locality"), q.get("position"), q.get("url")]))
+
     def nov(x):  # style suffix: open diamond when no specimen or sample is known
         return "" if x.get("herbaria") else "_nov"
 
@@ -290,12 +297,12 @@ def build(d: Path):
                                                           for r in prim if r["precision"] == "approximate"],
         "Natura 2000 sites listing the species (centroids)": [(f"{s['site_code']} {s['site_name']}", f"pop {s.get('pop_min')}-{s.get('pop_max')} {s.get('unit')}",
                                                                s["latitude"], s["longitude"], "natura") for s in n2k if outputs.has_xy(s)],
-        "Genetic data (ENA/GenBank, BOLD)": [(q["sequence_id"], " | ".join(filter(None, [
-            f"{q.get('marker')} ({q.get('source')} {q.get('kind')})", q.get("origin"), q.get("specimen_voucher"),
-            q.get("collector"), q.get("collection_date"), q.get("locality") or q.get("country"), q.get("position"),
-            q.get("url")])), q["latitude"], q["longitude"], "dna") for q in seq_points],
+        "Genetic data (ENA/GenBank, BOLD): Greece or unknown origin": [
+            (q["sequence_id"], seq_desc(q), q["latitude"], q["longitude"], "dna") for q in seq_points if q.get("origin") != "foreign"],
+        "Genetic data: other countries": [
+            (q["sequence_id"], seq_desc(q), q["latitude"], q["longitude"], "dna") for q in seq_points if q.get("origin") == "foreign"],
     }
-    outputs.write_kml(d / f"{sp}.kml", nm["accepted"], folders)
+    outputs.write_kml(d / f"{sp}.kml", nm["accepted"], folders, hidden={"Genetic data: other countries"})
     # Garmin symbols: a flag where a specimen or sample exists, a pin where there is none
     outputs.write_gpx(d / f"{sp}_sites.gpx", [(s["site_id"], site_desc(s)[:200], s["latitude"], s["longitude"],
                                                "Flag, Red" if s["herbaria"] else "Pin, Red") for s in sites])

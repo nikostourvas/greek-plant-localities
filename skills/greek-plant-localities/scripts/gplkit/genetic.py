@@ -2,7 +2,8 @@
 
 Sources:
 - ENA Portal API: all INSDC data (GenBank, ENA and DDBJ exchange daily), i.e. sequences, read runs (SRA),
-  samples (BioSample) and assemblies. Queried by NCBI taxon ID, worldwide, then filtered to Greece.
+  samples (BioSample) and assemblies. Queried by NCBI taxon ID, worldwide; every record is kept and `origin`
+  says whether it comes from Greece.
 - BOLD v5 public portal API: barcodes, often with coordinates; many are not in INSDC.
 - GGBN: DNA and tissue bank holdings, counts per genus only (record-level GGBN data come through GBIF,
   see `dna` in occurrences.py).
@@ -19,7 +20,7 @@ import json
 import re
 import urllib.parse
 
-from . import net
+from . import geo, net
 
 ENA_TAX = "https://www.ebi.ac.uk/ena/taxonomy/rest/any-name"
 ENA_SEARCH = "https://www.ebi.ac.uk/ena/portal/api/search"
@@ -82,14 +83,58 @@ def _in_greece_box(lat, lon) -> bool:
     return x0 <= lon <= x1 and y0 <= lat <= y1
 
 
-def origin(country: str, lat, lon, title: str = "", greek_words=()) -> str:
-    """'Greece', 'Greece (publication)', 'possibly Greece (coordinates)', 'foreign' or 'unknown'."""
+# INSDC placeholders for an unknown country, and INSDC spellings that differ from the ISO names GBIF lists
+MISSING = ("missing", "not collected", "not applicable", "not provided", "not recorded", "unknown", "restricted access",
+           "na", "n/a")
+COUNTRY_ALIASES = {"usa", "uk", "russia", "turkey", "turkiye", "iran", "syria", "south korea", "north korea", "laos",
+                   "vietnam", "czech republic", "macedonia", "ivory coast", "cape verde", "brunei", "taiwan", "kosovo",
+                   "palestine", "west bank", "gaza strip", "micronesia", "borneo", "antarctica", "bolivia", "venezuela",
+                   "tanzania", "moldova", "democratic republic of the congo", "republic of the congo"}
+
+
+def countries() -> set[str]:
+    d = net.get("https://api.gbif.org/v1/enumeration/country", source="GBIF countries") or []
+    return {c["title"].lower() for c in d if c.get("title")} | COUNTRY_ALIASES
+
+
+def _is_country(head: str, known: set[str] | None) -> bool:
+    h = head.lower().strip()
+    if known is None:
+        return True
+    return h in known or (len(h) >= 4 and any(k.startswith(h) for k in known))
+
+
+def _mentions(text: str, words) -> bool:
+    return any(re.search(r"\b" + re.escape(w), text or "", re.I) for w in words)
+
+
+def _greek_place(text: str) -> bool:
+    """A Greek settlement, island or natural feature of that name (for localities put in the country field)."""
+    hits = geo.nominatim(text, n=3)
+    return any(h["feature"].split(":")[0] in ("place", "natural", "boundary") and h["name"].lower() == text.lower()
+               for h in hits)
+
+
+def origin(country: str, lat, lon, title: str = "", greek_words=(), known=None, place_check=None) -> str:
+    """'Greece', 'Greece (publication)', 'possibly Greece (coordinates)', 'foreign' or 'unknown'.
+    `known`: country names (anything else in the country field is treated as a locality);
+    `place_check`: function telling whether such a locality is a Greek place."""
+    words = list(GREEK_WORDS) + list(greek_words)
     c = (country or "").strip()
+    head = c.split(":")[0].strip()
+    h = head.lower()
+    if h in MISSING or h.startswith(("missing", "not ")):  # 'missing: control sample', 'not collected'
+        c = head = ""
     if c:
-        return "Greece" if c.lower().startswith("greece") else "foreign"
+        if head.lower().startswith("greece") or _mentions(c, words):
+            return "Greece"
+        if _is_country(head, known):
+            return "foreign"
+        if place_check and place_check(head):  # e.g. 'Avdou', a village on Crete, given as the country
+            return "Greece"
     if lat not in ("", None) and lon not in ("", None):
         return "possibly Greece (coordinates)" if _in_greece_box(lat, lon) else "foreign"
-    if title and any(re.search(r"\b" + re.escape(w), title, re.I) for w in list(GREEK_WORDS) + list(greek_words)):
+    if title and _mentions(title, words):
         return "Greece (publication)"
     return "unknown"
 
@@ -261,22 +306,30 @@ def harvest(names: dict) -> tuple[list[dict], dict]:
     rows = [r for r in rows if id(r) not in drop]
 
     greek = [a.get("area") for a in names.get("greek_distribution") or [] if a.get("area")]
+    known = countries()
+    places: dict[str, bool] = {}
+
+    def place_check(text):
+        if text not in places:
+            places[text] = _greek_place(text)
+        return places[text]
+
     titles: dict[str, str] = {}
     lookups = 0
     for r in rows:
-        o = origin(r.get("country"), r.get("latitude"), r.get("longitude"))
+        o = origin(r.get("country"), r.get("latitude"), r.get("longitude"), greek_words=greek, known=known,
+                   place_check=place_check)
         if o == "unknown" and r["source"] == "ENA" and r["kind"] == "sequence":
             key = r.get("study") or r["sequence_id"]
             if key not in titles and lookups < TITLE_LOOKUPS:
                 titles[key] = _ena_title(r["sequence_id"])
                 lookups += 1
             r["title"] = titles.get(key, "")
-            o = origin("", "", "", r["title"], greek)
+            o = origin(r.get("country"), "", "", r["title"], greek, known)
         r["origin"] = o
     if lookups >= TITLE_LOOKUPS:
         net.log("ENA references", "truncated", f"publication titles looked up for the first {TITLE_LOOKUPS} studies only")
     foreign = sum(1 for r in rows if r["origin"] == "foreign")
-    kept = [r for r in rows if r["origin"] != "foreign"]
-    net.log("genetic data", "ok", f"{len(kept)} kept (Greece or unknown origin), {foreign} from other countries left out",
-            len(kept))
-    return kept, ggbn_counts(names)
+    net.log("genetic data", "ok", f"{len(rows) - foreign} from Greece or of unknown origin, {foreign} from other countries",
+            len(rows))
+    return rows, ggbn_counts(names)
