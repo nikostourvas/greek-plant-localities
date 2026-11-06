@@ -28,16 +28,11 @@ Give it a species name (`/greek-plant-localities:greek-plant-localities Zelkova 
    - Zenodo datasets
 6. **Claude reads and georeferences:** it reads the flora passages and the promising theses and papers, extracts and georeferences the localities (GeoNames, OSM, EKT Pandektis for old place names), and writes a report with ranked candidate sampling sites.
 
-**Outputs** go to `~/greek-plant-localities/<Species>_<date>/`:
-- `report.md`
-- `candidate_sites.csv`
-- `occurrences.csv`
-- `leads.csv`
-- a GeoPackage for QGIS
-- KML for Google Earth or a phone
-- GPX for GPS units
+**Outputs** go to `~/greek-plant-localities/<Species>_<date>/`, twelve files:
+- for you: `report.md`, a GeoPackage for QGIS, a KML for Google Earth or a phone, a GPX for GPS units, and `sites.csv` (the candidate sites as a spreadsheet)
+- working files: `occurrences.csv`, `sequences.csv`, `natura2000.csv`, `leads.csv`, `text_hits.md`, `georeferenced.csv` (the points Claude places) and `run.json` (names and source log)
 
-In the maps, records are coloured by how far their point can be trusted: precise coordinates; a pin placed by Claude at the most probable place from the locality text (old labels, floras); or generalised and withheld coordinates. The marker shape shows whether a herbarium specimen (or another deposited sample) exists for the record or site, and the site table lists the herbaria that hold them, with a legend of what the herbarium codes stand for (Index Herbariorum). It also lists genetic data already published from Greece (ENA/GenBank sequences, reads and genomes; BOLD barcodes) and marks the records and sites they come from.
+In the maps, records are coloured by how far their point can be trusted: precise coordinates; a pin placed by Claude at the most probable place from the locality text (old labels, floras); or generalised and withheld coordinates. The marker shape shows whether a herbarium specimen (or another deposited sample) exists for the record or site, and the report lists the herbaria that hold them, with what the herbarium codes stand for (Index Herbariorum). It also lists genetic data already published (ENA/GenBank sequences, reads and genomes; BOLD barcodes) and says, for each site, whether the DNA comes from the site's own specimens or only from a population nearby.
 
 ## Install
 

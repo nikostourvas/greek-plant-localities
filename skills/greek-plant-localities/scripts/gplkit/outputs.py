@@ -43,9 +43,11 @@ def has_xy(r) -> bool:
 
 MAX_PRECISE_M = 5000  # records with a larger uncertainty point to an area, not a site
 
-# georeferenced.csv: pins Claude places for records without (or with wrong) coordinates, by record_id.
-# Kept apart from occurrences.csv so that re-runs, which rewrite occurrences.csv, keep them.
-GEOREF_FIELDS = ["record_id", "latitude", "longitude", "uncertainty_m", "georef_method", "notes"]
+# georeferenced.csv: every point Claude places. Rows with a record_id are pins for occurrence records that have
+# no (or wrong) coordinates; rows without one are localities from floras and papers. Kept apart from
+# occurrences.csv so that re-runs, which rewrite occurrences.csv, keep them.
+GEOREF_FIELDS = ["record_id", "locality", "latitude", "longitude", "uncertainty_m", "georef_method", "source_ref", "page",
+                 "year", "collector_or_author", "herbarium", "voucher", "notes"]
 
 
 def apply_georef(recs: list[dict], rows: list[dict]) -> int:
@@ -165,25 +167,35 @@ def _sequence_keys(q) -> set[str]:
 
 
 def _seq_label(q) -> str:
-    return f"{q.get('marker') or '?'} ({q.get('source')} {q.get('sequence_id')})"
+    return f"{q.get('marker') or '?'}: {q.get('source')} {q.get('sequence_id')}"
+
+
+def _add_id(q: dict, field: str, value: str) -> None:
+    q[field] = " ".join(dict.fromkeys(f"{q.get(field) or ''} {value}".split()))
 
 
 def link_sequences(recs: list[dict], seqs: list[dict]) -> None:
-    """Attach sequences to the records they come from. Sets `sequences` and `markers` on every record of the
-    duplicate group, and `linked_records` on the sequences. Keys, strongest first: the record's own GBIF DNA flag,
-    voucher or catalogue number, collector + number (BOLD field ID), and the same collector within 100 m."""
+    """Attach sequences to the specimens they were made from, by identifier only: voucher or catalogue number,
+    or collector + number (BOLD field ID). Such a link is certain: `match` = "same specimen", with
+    `match_basis`. Sets `sequences` and `markers` on every record of the duplicate group (plus the record's
+    own GBIF DNA flag) and `linked_records` on the sequences. Sequences that only lie close to a record are
+    handled by link_sites() as "nearby"."""
     index: dict[str, list[dict]] = {}
     for r in recs:
         for k in _record_keys(r):
             index.setdefault(k, []).append(r)
     hits: dict[int, list[dict]] = {}
-    for q in seqs:
-        found = {id(r): r for k in _sequence_keys(q) for r in index.get(k, [])}
-        if not found and has_xy(q) and _surname(q.get("collector")):
-            p = (_num(q["latitude"]), _num(q["longitude"]))
-            found = {id(r): r for r in recs if has_xy(r) and _surname(r.get("collector")) == _surname(q.get("collector"))
-                     and haversine_m(p, (_num(r["latitude"]), _num(r["longitude"]))) <= 100}
+    for q in seqs:  # sequences.csv is read back on every build: drop the links of the previous one
+        q.update(match="", match_basis="", distance_m="", linked_records="", site_ids="")
+        keys = [k for k in _sequence_keys(q) if k in index]
+        found = {id(r): r for k in keys for r in index[k]}
         q["linked_records"] = " ".join(r["record_id"] for r in found.values())[:300]
+        if found:
+            q["match"] = "same specimen"
+            if any(k.startswith("v:") for k in keys):
+                q["match_basis"] = f"voucher / catalogue number {q.get('specimen_voucher')}"
+            else:
+                q["match_basis"] = f"collector + number: {q.get('collector')}, {q.get('field_id') or q.get('specimen_voucher')}"
         for r in found.values():
             hits.setdefault(id(r), []).append(q)
     groups: dict[str, list[dict]] = {}
@@ -202,27 +214,43 @@ def link_sequences(recs: list[dict], seqs: list[dict]) -> None:
 
 
 def link_sites(sites: list[dict], recs: list[dict], seqs: list[dict], radius_m: float = 1000) -> None:
-    """Sequences per site: those of its records, plus sequences with coordinates within `radius_m`
-    (a sequenced population nearby, not necessarily the same specimen). Sets `n_sequences`, `markers`,
-    `sequence_ids` on the sites and `site_ids` on the sequences."""
+    """Genetic data per site, in two kinds that must not be mixed up:
+    - `dna_same_specimens` / `n_dna_same`: made from specimens in the site's records (see link_sequences);
+    - `dna_nearby` / `n_dna_nearby`: no shared identifier, only coordinates within `radius_m` of one of the
+      site's records; probably the same population, not the same plants. Gives the distance, and notes
+      when the collector is the same.
+    Sets `site_ids` on the sequences, and `match` = "nearby" with `distance_m` on those not linked by identifier."""
     by_id = {r["record_id"]: r for r in recs}
+    located = [q for q in seqs if has_xy(q)]
     for s in sites:
-        labels, marks = [], set()
-        for rid in str(s.get("record_ids") or "").split():
-            r = by_id.get(rid) or {}
-            if r.get("sequences"):
-                labels += [x for x in r["sequences"].split("; ") if x]
-                marks |= {x for x in str(r.get("markers") or "").split("; ") if x and x != "yes"}
-        c = (_num(s["latitude"]), _num(s["longitude"]))
+        ids = set(str(s.get("record_ids") or "").split())
+        members = [by_id[i] for i in ids if i in by_id]
+        same = [x for r in members for x in str(r.get("sequences") or "").split("; ") if x]
+        pts = [(_num(r["latitude"]), _num(r["longitude"]), r) for r in members if has_xy(r)]
+        near = []
         for q in seqs:
-            near = has_xy(q) and haversine_m(c, (_num(q["latitude"]), _num(q["longitude"]))) <= radius_m
-            if near or set(str(q.get("linked_records") or "").split()) & set(str(s.get("record_ids") or "").split()):
-                labels.append(_seq_label(q))
-                marks.add(q.get("marker") or "?")
-                q.setdefault("site_ids", "")
-                q["site_ids"] = " ".join(dict.fromkeys((q["site_ids"] + " " + s["site_id"]).split()))
-        labels = list(dict.fromkeys(labels))
-        s.update(n_sequences=len(labels), markers="; ".join(sorted(marks)), sequence_ids="; ".join(labels)[:500])
+            if set(str(q.get("linked_records") or "").split()) & ids:
+                _add_id(q, "site_ids", s["site_id"])
+        for q in located:
+            if set(str(q.get("linked_records") or "").split()) & ids or not pts:
+                continue
+            p = (_num(q["latitude"]), _num(q["longitude"]))
+            dist, rec = min(((haversine_m(p, (la, lo)), r) for la, lo, r in pts), key=lambda t: t[0])
+            if dist > radius_m:
+                continue
+            sur = _surname(q.get("collector"))
+            same_collector = bool(sur) and any(_surname(r.get("collector")) == sur for _, _, r in pts)
+            near.append(f"{_seq_label(q)}, {round(dist)} m" + (", same collector" if same_collector else ""))
+            _add_id(q, "site_ids", s["site_id"])
+            if q.get("match") != "same specimen":
+                q["match"] = "nearby"
+                old = _num(q.get("distance_m"))
+                q["distance_m"] = round(dist) if old is None else min(old, round(dist))
+                q["match_basis"] = f"coordinates within {round(q['distance_m'])} m of {rec['record_id']}" + \
+                                   (" (same collector)" if same_collector else "")
+        same = list(dict.fromkeys(same))
+        s.update(n_dna_same=len(same), dna_same_specimens="; ".join(same)[:500],
+                 n_dna_nearby=len(near), dna_nearby="; ".join(near)[:500])
 
 
 # ------------------------------------------------------------------ clustering
@@ -332,7 +360,8 @@ def _geom_blob(geom: dict):
 
 
 def write_gpkg(path: Path, layers: dict[str, tuple[str, list[tuple[dict, dict]]]]) -> None:
-    """layers: name -> (geometry type 'POINT'|'MULTIPOLYGON', [(geojson geometry, properties), ...])."""
+    """layers: name -> (geometry type 'POINT'|'MULTIPOLYGON', [(geojson geometry, properties), ...]);
+    geometry type None makes an attribute table (rows without geometry)."""
     if path.exists():
         path.unlink()
     con = sqlite3.connect(path)
@@ -367,6 +396,16 @@ def write_gpkg(path: Path, layers: dict[str, tuple[str, list[tuple[dict, dict]]]
         numeric = {k for k in cols if all(_num(p.get(k)) is not None or p.get(k) in ("", None) for _, p in feats)
                    and any(_num(p.get(k)) is not None for _, p in feats)}
         coldefs = ", ".join(f'"{k}" {"REAL" if k in numeric else "TEXT"}' for k in cols)
+        if gtype is None:  # attribute table (e.g. herbaria): no geometry
+            c.execute(f'CREATE TABLE "{name}" (fid INTEGER PRIMARY KEY AUTOINCREMENT{", " + coldefs if cols else ""})')
+            for _, props in feats:
+                vals = [(_num(props.get(k)) if k in numeric else (None if props.get(k) in (None, "") else str(props.get(k))))
+                        for k in cols]
+                c.execute(f'INSERT INTO "{name}" ({", ".join(f"{chr(34)}{k}{chr(34)}" for k in cols)}) '
+                          f'VALUES ({",".join("?" * len(cols))})', vals)
+            c.execute("INSERT INTO gpkg_contents (table_name, data_type, identifier, last_change) VALUES (?,?,?,?)",
+                      (name, "attributes", name, now))
+            continue
         c.execute(f'CREATE TABLE "{name}" (fid INTEGER PRIMARY KEY AUTOINCREMENT, geom {gtype}{", " + coldefs if cols else ""})')
         bbox = [math.inf, math.inf, -math.inf, -math.inf]
         collist = "".join(f', "{k}"' for k in cols)
@@ -426,9 +465,10 @@ def write_kml(path: Path, title: str, folders: dict[str, list[tuple[str, str, fl
 
 
 def write_gpx(path: Path, waypoints: list[tuple]) -> None:
-    """waypoints: (name, description, lat, lon[, symbol]); the symbol is a Garmin name such as 'Flag, Blue'."""
+    """waypoints: (name, description, lat, lon[, symbol[, type]]); the symbol is a Garmin name such as 'Flag, Blue'."""
     wpts = "".join(f'<wpt lat="{w[2]}" lon="{w[3]}"><name>{escape(w[0])}</name><desc>{escape(w[1])}</desc>'
-                   + (f"<sym>{escape(w[4])}</sym>" if len(w) > 4 and w[4] else "") + "</wpt>"
+                   + (f"<sym>{escape(w[4])}</sym>" if len(w) > 4 and w[4] else "")
+                   + (f"<type>{escape(w[5])}</type>" if len(w) > 5 and w[5] else "") + "</wpt>"
                    for w in waypoints)
     path.write_text('<?xml version="1.0" encoding="UTF-8"?><gpx version="1.1" creator="greek-plant-localities" '
                     f'xmlns="http://www.topografix.com/GPX/1/1">{wpts}</gpx>', encoding="utf-8")

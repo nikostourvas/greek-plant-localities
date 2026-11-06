@@ -79,7 +79,7 @@ Cautions: many Greek hosts rate-limit/block fast clients (IKEE, UOWM blocked aft
   - `https://ypen.gov.gr/diavouleusi/wp-json/wp/v2/media?search=EPM&per_page=100&page=N&_fields=source_url,date` (about 227 chapter PDFs, 2022–2026)
   - `https://ypen.gov.gr/wp-json/wp/v2/media?search=ΕΠΜ` (approved studies as ZIPs, e.g. `ΜΕΛΕΤΕΣ_ΕΠΜ_8Α.zip`, 72 MB)
 - **What's useful:** chapter 3 (ΤΤΑ) lists the flora of the Habitats Directive, priority species and endemics per site, plus zoning and land-use maps. Locality detail is mostly at site level.
-- **How they're organised:** by study group (region), not by site. To use them, find the study group covering the Natura sites in `natura2000_sites.csv`, then download only that group's chapter 3 and search it with `gpl.py run ... --pdf`.
+- **How they're organised:** by study group (region), not by site. To use them, find the study group covering the Natura sites in `natura2000.csv`, then download only that group's chapter 3 and search it with `gpl.py run ... --pdf`.
 - **robots.txt:** ypen.gov.gr has `Disallow: /*.pdf$`. Fetch single files on purpose; never crawl.
 
 ## Other registers

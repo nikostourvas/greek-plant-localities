@@ -7,7 +7,7 @@ import collections
 import datetime as dt
 from pathlib import Path
 
-from .outputs import has_xy, read_csv
+from .outputs import has_xy
 
 START, END = "<!-- CLAUDE-SYNTHESIS-START -->", "<!-- CLAUDE-SYNTHESIS-END -->"
 PLACEHOLDER = ("_Not written yet. Claude fills this section after reading the leads, the flora text hits and the "
@@ -43,7 +43,9 @@ def _genetic_section(sites, seqs, ggbn, leads) -> str:
     by_kind = collections.Counter(f"{q.get('source')} {q.get('kind')}" for q in seqs)
     by_marker = collections.Counter(q.get("marker") or "?" for q in seqs)
     by_origin = collections.Counter(q.get("origin") or "?" for q in seqs)
-    seq_sites = [s for s in sites if s.get("sequence_ids")]
+    seq_sites = [s for s in sites if s.get("dna_same_specimens") or s.get("dna_nearby")]
+    n_same = sum(1 for s in sites if s.get("dna_same_specimens"))
+    n_near_only = sum(1 for s in sites if s.get("dna_nearby") and not s.get("dna_same_specimens"))
     rank = {"Greece": 0, "Greece (publication)": 1, "possibly Greece (coordinates)": 2, "unknown": 3}
     check = sorted((q for q in seqs if not q.get("site_ids") and q.get("origin") != "foreign"),
                    key=lambda q: rank.get(q.get("origin"), 4))
@@ -60,16 +62,21 @@ countries are in a folder that starts switched off.
 - **Markers:** {', '.join(f'{k} {v}' for k, v in by_marker.most_common()) or '—'}
 - **Origin:** {', '.join(f'{k} {v}' for k, v in by_origin.most_common()) or '—'}. "Greece (publication)" means the record has no country or coordinates but its publication's title names Greece or a Greek place.
 - **From other countries:** {', '.join(f'{k} {v}' for k, v in abroad.most_common()) or 'none'}.
-- **Sites with sequences:** {len(seq_sites)} of {len(sites)} candidate sites (columns `markers`, `sequence_ids`; a sequence counts for a site if it comes from one of the site's records or lies within 1 km).
+- **Sites with genetic data:** {n_same} of {len(sites)} candidate sites have DNA from their own specimens; {n_near_only} more have DNA only nearby.
 - **DNA and tissue banks (GGBN, per genus; no localities):** {g}. Search https://www.ggbn.org/ggbn_portal/ for the samples.
 
-{_md_table(seq_sites, ["site_id", "markers", "n_sequences", "sequence_ids", "herbaria", "example_locality"], 60)}
+Two kinds of match, kept apart in every table, map and description:
+
+- **Same specimen:** the sequence was made from a specimen listed for the site. It is matched by an identifier: voucher or catalogue number, or collector + field number. The site is sequenced.
+- **Nearby:** there is no shared identifier; only the sequence's coordinates lie within 1 km of a record of the site (10 km for areas). Probably the same population, but not the same plants. Check the publication or voucher before treating the site as sequenced.
+
+{_md_table(seq_sites, ["site_id", "dna_same_specimens", "dna_nearby", "herbaria", "example_locality"], 60)}
 ### Sequences from Greece or of unknown origin not at a candidate site ({len(check)})
 
 Greek ones first. Some come from a record with generalised coordinates (`linked_records`); for the others, read the
 publication or the voucher to find where they were collected.
 
-{_md_table(check, ["source", "sequence_id", "marker", "origin", "specimen_voucher", "linked_records", "collection_date", "title"], 40)}
+{_md_table(check, ["source", "sequence_id", "marker", "origin", "match", "specimen_voucher", "linked_records", "collection_date", "title"], 40)}
 ### Genetic studies among the literature leads ({len(gen_leads)})
 
 {_md_table(gen_leads, ["year", "title", "authors", "url"], 30)}
@@ -81,16 +88,15 @@ BOLD process IDs into BOLDconnectR (`bold.fetch`) or the BOLD portal.
 
 def write_report(d: Path, nm: dict, recs: list[dict], sites: list[dict], n2k: list[dict], areas: list[dict],
                  herb: list[dict] | None = None, seqs: list[dict] | None = None, ggbn: dict | None = None,
-                 leads: list[dict] | None = None) -> None:
+                 leads: list[dict] | None = None, lit: list[dict] | None = None, sources: list[dict] | None = None,
+                 has_art17: bool = False) -> None:
     rp = d / "report.md"
     synthesis = PLACEHOLDER
     if rp.exists():
         old = rp.read_text(encoding="utf-8")
         if START in old and END in old:
             synthesis = old.split(START, 1)[1].split(END, 1)[0].strip() or PLACEHOLDER
-    log = read_csv(d / "sources_log.csv")
-    leads = read_csv(d / "leads.csv")
-    lit = read_csv(d / "literature_localities.csv")
+    log, leads, lit = sources or [], leads or [], lit or []
     prim = [r for r in recs if r.get("is_primary") == "yes"]
     by_src = collections.Counter(r["source"] for r in recs)
     with_xy = collections.Counter(r["source"] for r in recs if has_xy(r))
@@ -135,14 +141,14 @@ A specimen, sample or cited specimen means material is deposited somewhere, so t
 
 ### Herbaria holding specimens ({len(herb or [])})
 
-The codes in the `herbaria` columns are Index Herbariorum codes (B = Berlin, K = Kew, LD = Lund …). Also in `herbaria.csv`.
+The codes in the `herbaria` columns are Index Herbariorum codes (B = Berlin, K = Kew, LD = Lund …). Also in the GeoPackage table `herbaria`.
 
 {_md_table([dict(e, place=", ".join(filter(None, [e.get("city"), e.get("country")])), name=e.get("name") or "not in Index Herbariorum") for e in herb or []],
            ["code", "name", "place", "n_records", "n_sites", "url"], 80)}
 ### Candidate sites ({len(sites)})
 
 Clusters (1 km) of unique records with precise coordinates (uncertainty ≤ 5 km, not generalised), newest first.
-Also in `candidate_sites.csv`, the GeoPackage, the KML and the GPX.
+Also in `sites.csv` (all of them, with the 10 km areas), the GeoPackage, the KML and the GPX.
 {sum(1 for x in sites if x.get('herbaria'))} of {len(sites)} sites have a herbarium specimen or other deposited sample (`herbaria`, including duplicate sheets in other herbaria); the others are known only from observations or literature.
 In the KML these are filled circles, the others open diamonds; in the GPX, flags versus pins.
 
@@ -156,15 +162,17 @@ These are areas where the species is known but no precise site is published: con
 ### Records without precise coordinates
 
 {sum(1 for r in prim if not has_xy(r))} unique records have no coordinates, {sum(1 for r in prim if r.get('precision') == 'placed')} have a pin placed at the most probable place from their locality text, and {sum(1 for r in prim if r.get('precision') == 'approximate')} have generalised, withheld or > 5 km coordinates.
-Their locality text is in `occurrences.csv`. Pins for coordinate-less records go in `georeferenced.csv` (SKILL.md, step 5).
-In the maps, placed pins are blue and approximate ones grey (GeoPackage layers `occurrences_placed` and `occurrences_approximate`; GPX `*_approximate.gpx`).
+Their locality text is in `occurrences.csv`. Pins for coordinate-less records go in `georeferenced.csv` with their `record_id` (SKILL.md, step 5).
+In the maps, placed pins are blue and approximate ones grey (GeoPackage layers `occurrences_placed` and `occurrences_approximate`; in the GPX, blue and green waypoints).
 
 {_genetic_section(sites, seqs, ggbn, leads)}## Natura 2000 sites listing the species ({len(n2k)})
 
 {_md_table(n2k, ["site_code", "site_name", "population_rating", "pop_min", "pop_max", "unit", "data_quality", "sdf_url"])}
-Article 17 (2019–2024) distribution: {'see layer `art17_distribution` in the GeoPackage' if (d / 'art17_grid.geojson').exists() else 'not available (species not in the Habitats Directive annexes, or sensitive)'}.
+Article 17 (2019–2024) distribution: {'see layer `art17_distribution` in the GeoPackage' if has_art17 else 'not available (species not in the Habitats Directive annexes, or sensitive)'}.
 
 ## Localities extracted from literature and floras ({len(lit)})
+
+Rows of `georeferenced.csv` without a `record_id`.
 
 {_md_table(lit, ["locality", "latitude", "longitude", "uncertainty_m", "source_ref", "page", "year"])}
 ## Literature leads ({len(leads)})
