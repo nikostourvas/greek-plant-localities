@@ -81,7 +81,7 @@ It writes to `<output_root>/<Genus_species>_<date>/`:
 | `leads.csv` | theses, papers, treatments and datasets that mention the species |
 | `literature_localities.csv` | **empty; you fill it** (steps 3–5) |
 | `georeferenced.csv` | **empty; you fill it** (step 5): pins for records in `occurrences.csv` that have no coordinates, or wrong ones, by `record_id` |
-| `candidate_sites.csv` | 1 km clusters of precise records: candidate sampling sites |
+| `candidate_sites.csv` | 1 km clusters of precise records: candidate sampling sites. `herbaria` / `n_vouchered` say where a specimen or other deposited sample from the site is kept (duplicate sheets in other herbaria included); empty means observations or literature only |
 | `candidate_areas.csv` | 10 km clusters including generalised records: where the species is known but no precise site is published |
 | `<sp>.gpkg`, `<sp>.kml`, `<sp>_sites.gpx`, `<sp>_approximate.gpx`, `report.md` | built outputs (GeoPackage for QGIS; KML for Google Earth or a phone; GPX for GPS units). Records are split by how far to trust the point: *precise* (source coordinates, ≤ 5 km), *placed* (pin set at the most probable place from the locality text) and *approximate* (generalised, withheld or > 5 km). They are separate GeoPackage layers and KML folders (orange or magenta, blue, grey); placed and approximate pins are also in `_approximate.gpx` |
 | `sources_log.csv` | per-source status; check it for failures |
@@ -95,8 +95,9 @@ Read `text_hits.md`. Each block is a passage that starts at a mention of the spe
 - **Is the name used for this taxon?** A misapplied name refers to it only in Greek floras. Elsewhere, for example *Acinos exiguus* in Cyprus, it is the other taxon. A homonym among the extended names can also match an unrelated plant.
 - **A name missing from the list?** Floras, Halácsy and Boissier above all, sometimes file the taxon under a name that is not in `names.json`. Search it too with `GPL run "<species>" --out <run_dir> --add-name "<name>"`. Cached queries replay instantly, so only the new name is actually queried.
 - **Pull out every locality.** In the Strid floras, localities are listed by region (PELOPONNISOS:, STEREA ELLAS:, S PINDHOS: …), usually as mountain names. A `!` means the authors saw a specimen. Note the altitude range and habitat; they help you place points.
+- **Note the voucher.** When the source cites a specimen, fill `herbarium` with the Index Herbariorum code(s) where it is kept ("LD", "K, LD"; "?" for a `!` that doesn't say where). Fill `voucher` with what identifies it: collector, number, year, or an exsiccata such as "Heldr. herb. norm. 619". Leave both empty for sight records and plain locality lists. These rows count as vouchered localities.
 - **For Halácsy and Boissier:** these give 19th-century localities with the collector, e.g. "Heldr.!" or "Orph.!". They are valuable for finding historic populations again.
-- **Add one row per locality to `literature_localities.csv`.** Columns: `locality, latitude, longitude, uncertainty_m, georef_method, source_ref, page, year, collector_or_author, notes`. Georeference as described in step 5.
+- **Add one row per locality to `literature_localities.csv`.** Columns: `locality, latitude, longitude, uncertainty_m, georef_method, source_ref, page, year, collector_or_author, herbarium, voucher, notes`. Georeference as described in step 5.
 
 Many hits are long. Read the context in full; locality lists often come after a long description.
 For widespread species `text_hits.md` can be large. Read it in parts (it is grouped by source), floras first, then proceedings.
@@ -165,9 +166,10 @@ Then write the synthesis in `report.md`, **only between the markers `<!-- CLAUDE
   - recent records
   - several independent sources
   - precise coordinates
+  - a herbarium specimen (`herbaria` in `candidate_sites.csv`): the identification can be checked, and a specimen revised by a specialist (see the identification history in `occurrences.csv` notes) is the best evidence
   - sites that cover the geographic and environmental range (for population genetics: spread across regions and isolated populations)
 
-  For each site give the site id, area, best evidence, and practical notes such as the Natura 2000 site, the altitude, and whether it's a historic record still to be confirmed.
+  For each site give the site id, area, best evidence (with the herbaria holding specimens), and practical notes such as the Natura 2000 site, the altitude, and whether it's a historic record still to be confirmed.
 - **Gaps:** regions known only from old records or from generalised coordinates (`candidate_areas.csv` areas with no candidate site). These are worth confirming or asking curators about.
 - **Manual follow-ups:**
   - curators to email about withheld coordinates (DiSSCo Hellas generalises sensitive taxa to 10 km)

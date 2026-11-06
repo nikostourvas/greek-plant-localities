@@ -25,7 +25,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gplkit import config, geo, literature, names as namesmod, natura, net, occurrences, outputs, report, textsearch  # noqa: E402
 
 LIT_LOC_FIELDS = ["locality", "latitude", "longitude", "uncertainty_m", "georef_method", "source_ref", "page",
-                  "year", "collector_or_author", "notes"]
+                  "year", "collector_or_author", "herbarium", "voucher", "notes"]
+SITE_FIELDS = ["site_id", "latitude", "longitude", "n_records", "n_vouchered", "herbaria", "sources", "first_year",
+               "last_year", "last_voucher_year", "best_uncertainty_m", "example_locality", "record_ids"]
 
 
 def slug(s: str) -> str:
@@ -189,6 +191,7 @@ def build(d: Path):
     for i, r in enumerate(lit, 1):
         rr = {k: "" for k in occurrences.FIELDS}
         rr.update(record_id=f"lit:{i}", source="Literature (extracted)", locality=r.get("locality"),
+                  institution=r.get("herbarium") or "", voucher=r.get("voucher") or "",
                   latitude=r.get("latitude"), longitude=r.get("longitude"), uncertainty_m=r.get("uncertainty_m"),
                   year=r.get("year"), collector=r.get("collector_or_author"),
                   notes=f"{r.get('source_ref')} p.{r.get('page')}; {r.get('georef_method')}; {r.get('notes')}",
@@ -199,14 +202,11 @@ def build(d: Path):
     allrecs = recs + lit_recs
     for r in allrecs:
         r["precision"] = outputs.precision(r)
+    outputs.add_vouchers(allrecs)
     sites = outputs.candidate_sites(allrecs)
-    outputs.write_csv(d / "candidate_sites.csv", sites,
-                      ["site_id", "latitude", "longitude", "n_records", "sources", "first_year", "last_year",
-                       "best_uncertainty_m", "example_locality", "record_ids"])
+    outputs.write_csv(d / "candidate_sites.csv", sites, SITE_FIELDS)
     areas = outputs.candidate_sites(allrecs, radius_m=10000, max_uncertainty_m=None, prefix="A")
-    outputs.write_csv(d / "candidate_areas.csv", areas,
-                      ["site_id", "latitude", "longitude", "n_records", "n_generalised", "sources", "first_year",
-                       "last_year", "best_uncertainty_m", "example_locality", "record_ids"])
+    outputs.write_csv(d / "candidate_areas.csv", areas, SITE_FIELDS[:4] + ["n_generalised"] + SITE_FIELDS[4:])
     n2k = outputs.read_csv(d / "natura2000_sites.csv")
     layers = {
         "candidate_sites": ("POINT", outputs.point_features(sites)),
@@ -225,33 +225,45 @@ def build(d: Path):
     outputs.write_gpkg(d / f"{sp}.gpkg", layers)
 
     def desc(r):
-        return " | ".join(str(x) for x in [r.get("source"), r.get("institution"), r.get("catalog_number"), r.get("collector"),
+        ev = f"{r['evidence']}: {r['vouchers']}" if r.get("vouchers") else r["evidence"]
+        other = "" if r.get("vouchers") else " ".join(filter(None, [r.get("institution"), r.get("catalog_number")]))
+        return " | ".join(str(x) for x in [ev, r.get("source"), other, r.get("collector"),
                                             r.get("event_date") or r.get("year"), r.get("locality"),
                                             f"±{r.get('uncertainty_m')} m" if r.get("uncertainty_m") else "",
                                             "pin placed from the locality text" if r["precision"] == "placed" else ""] if x)
 
     prim = [r for r in allrecs if r.get("is_primary") == "yes"]
+
+    def nov(x):  # style suffix: open diamond when no specimen or sample is known
+        return "" if x.get("herbaria") else "_nov"
+
+    def site_desc(s, generalised=False):
+        v = (f"specimens in {s['herbaria']} ({s['n_vouchered']} rec., last {s['last_voucher_year'] or '?'})"
+             if s["herbaria"] else "no specimen known: observations or literature only")
+        g = f" ({s['n_generalised']} generalised)" if generalised else ""
+        return f"{v}; {s['n_records']} rec.{g}; {s['sources']}; last {s['last_year']}; {s['example_locality']}"
     folders = {
-        "Candidate sites": [(s["site_id"], f"{s['n_records']} rec.; {s['sources']}; last {s['last_year']}; {s['example_locality']}",
-                             s["latitude"], s["longitude"], "site") for s in sites],
-        "Candidate areas (10 km, incl. generalised records)": [(a["site_id"], f"{a['n_records']} rec. ({a['n_generalised']} generalised); {a['sources']}; last {a['last_year']}",
-                                                               a["latitude"], a["longitude"], "generalised") for a in areas],
+        "Candidate sites": [(s["site_id"], site_desc(s), s["latitude"], s["longitude"], "site" + nov(s)) for s in sites],
+        "Candidate areas (10 km, incl. generalised records)": [(a["site_id"], site_desc(a, True), a["latitude"], a["longitude"],
+                                                                "generalised" + nov(a)) for a in areas],
         "Occurrences (precise)": [(r["record_id"], desc(r), r["latitude"], r["longitude"],
-                                   "literature" if r["source"].startswith("Literature") else "occurrence")
+                                   ("literature" if r["source"].startswith("Literature") else "occurrence") + nov(r))
                                   for r in prim if r["precision"] == "precise"],
-        "Occurrences (pin placed at the most probable place)": [(r["record_id"], desc(r), r["latitude"], r["longitude"], "placed")
+        "Occurrences (pin placed at the most probable place)": [(r["record_id"], desc(r), r["latitude"], r["longitude"], "placed" + nov(r))
                                                                 for r in prim if r["precision"] == "placed"],
-        "Occurrences (generalised, withheld or > 5 km)": [(r["record_id"], desc(r), r["latitude"], r["longitude"], "generalised")
+        "Occurrences (generalised, withheld or > 5 km)": [(r["record_id"], desc(r), r["latitude"], r["longitude"], "generalised" + nov(r))
                                                           for r in prim if r["precision"] == "approximate"],
         "Natura 2000 sites listing the species (centroids)": [(f"{s['site_code']} {s['site_name']}", f"pop {s.get('pop_min')}-{s.get('pop_max')} {s.get('unit')}",
                                                                s["latitude"], s["longitude"], "natura") for s in n2k if outputs.has_xy(s)],
     }
     outputs.write_kml(d / f"{sp}.kml", nm["accepted"], folders)
-    outputs.write_gpx(d / f"{sp}_sites.gpx", [(s["site_id"], s["example_locality"][:100], s["latitude"], s["longitude"], "Flag, Red")
-                                              for s in sites])
+    # Garmin symbols: a flag where a specimen or sample exists, a pin where there is none
+    outputs.write_gpx(d / f"{sp}_sites.gpx", [(s["site_id"], site_desc(s)[:200], s["latitude"], s["longitude"],
+                                               "Flag, Red" if s["herbaria"] else "Pin, Red") for s in sites])
     # approximate points as a separate file, so that GPS apps show them in another colour
     outputs.write_gpx(d / f"{sp}_approximate.gpx", [
-        ("~" + r["record_id"], desc(r)[:200], r["latitude"], r["longitude"], "Flag, Blue" if r["precision"] == "placed" else "Flag, Green")
+        ("~" + r["record_id"], desc(r)[:200], r["latitude"], r["longitude"],
+         ("Flag, " if r.get("herbaria") else "Pin, ") + ("Blue" if r["precision"] == "placed" else "Green"))
         for r in prim if r["precision"] in ("placed", "approximate")])
     report.write_report(d, nm, allrecs, sites, n2k, areas)
     print(f"[gpl] built: {d}/report.md, {sp}.gpkg, {sp}.kml, {sp}_sites.gpx, {sp}_approximate.gpx, candidate_sites.csv", file=sys.stderr)

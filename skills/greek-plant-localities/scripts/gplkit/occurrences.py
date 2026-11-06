@@ -33,6 +33,22 @@ def _year(date):
     return int(m.group(1)) if m else None
 
 
+def _herbarium_from_catalog(cat) -> str:
+    """Index Herbariorum-style acronym at the start of a catalogue number ("B 10 0196469",
+    "L.2868810", "TAU024127"), for records that do not name their herbarium."""
+    m = re.match(r"^([A-Z]{1,6})[\s.:\-]*\d", str(cat or ""))
+    return m.group(1) if m else ""
+
+
+def _herbarium_code(catalog, collection_code, basis) -> str:
+    """Herbarium of a specimen whose record leaves out institutionCode: the catalogue-number prefix,
+    else a collection code that looks like an acronym (not "Botany" or "Herbarium")."""
+    if "OBSERVATION" in str(basis or "").upper():
+        return ""
+    cc = str(collection_code or "")
+    return _herbarium_from_catalog(catalog) or (cc if re.fullmatch(r"[A-Z][A-Z-]{0,9}", cc) else "")
+
+
 def _rec(**kw) -> dict:
     r = {k: "" for k in FIELDS}
     r.update({k: v for k, v in kw.items() if v is not None})
@@ -114,7 +130,8 @@ def gbif(names: dict) -> list[dict]:
         out.append(_rec(
             source="GBIF", source_url=f"https://www.gbif.org/occurrence/{r['key']}",
             record_id=f"gbif:{r['key']}", scientific_name=r.get("scientificName"),
-            basis=r.get("basisOfRecord"), institution=r.get("institutionCode"),
+            basis=r.get("basisOfRecord"),
+            institution=r.get("institutionCode") or _herbarium_code(r.get("catalogNumber"), r.get("collectionCode"), r.get("basisOfRecord")),
             catalog_number=r.get("catalogNumber"), collector=r.get("recordedBy"),
             record_number=r.get("recordNumber"), event_date=r.get("eventDate", "")[:10],
             year=r.get("year"), country=r.get("countryCode"), region=r.get("stateProvince"),
@@ -124,6 +141,8 @@ def gbif(names: dict) -> list[dict]:
             coords_generalised="yes" if r.get("dataGeneralizations") or "COORDINATE_ROUNDED" in issues else "",
             license=r.get("license"),
             notes="; ".join(filter(None, [r.get("datasetName"), ",".join(issues),
+                                          f"det. {r['identifiedBy']} {str(r.get('dateIdentified') or '')[:10]}".strip()
+                                          if r.get("identifiedBy") else "",
                                           f"found via the name '{via[r['key']]}'" if r["key"] in via else ""])),
         ))
     net.log("GBIF", "ok", f"taxonKey={key}", len(out))
@@ -192,16 +211,24 @@ def jacq(names: dict) -> list[dict]:
                 if sid in seen:
                     continue
                 seen.add(sid)
-                herb = (sid or "").split("//")[-1].split(".")[0].upper() if sid else ""
+                # the herbarium: JACQ's owner abbreviation, else the collection code or the catalogue number
+                herb = (jq.get("jacq:OwnerOrganizationAbbrev") or dwc.get("dwc:collectionCode")
+                        or _herbarium_from_catalog(dwc.get("dwc:catalogNumber")))
+                # some JACQ herbaria (e.g. B) put the catalogue number in recordNumber; the collector number is jacq:Nummer
+                rec_no = dwc.get("dwc:recordNumber")
+                if not rec_no or rec_no == dwc.get("dwc:catalogNumber"):
+                    rec_no = jq.get("jacq:Nummer") or dwc.get("dwc:fieldNumber") or ""
                 out.append(_rec(
                     source="JACQ", record_id=f"jacq:{jq.get('jacq:specimenID')}", source_url=sid,
                     scientific_name=dwc.get("dwc:scientificName"), basis=dwc.get("dwc:basisOfRecord"),
                     institution=herb, catalog_number=dwc.get("dwc:catalogNumber"),
-                    collector=dwc.get("dwc:recordedBy"), record_number=dwc.get("dwc:recordNumber"),
+                    collector=dwc.get("dwc:recordedBy"), record_number=rec_no,
                     event_date=dwc.get("dwc:eventDate"), year=_year(dwc.get("dwc:eventDate")),
                     country="GR", locality=dwc.get("dwc:locality"),
                     latitude=dwc.get("dwc:decimalLatitude"), longitude=dwc.get("dwc:decimalLongitude"),
-                    notes="no coordinate uncertainty in JACQ",
+                    notes="; ".join(filter(None, ["no coordinate uncertainty in JACQ",
+                                                  f"identifications: {dwc['dwc:previousIdentifications']}"
+                                                  if dwc.get("dwc:previousIdentifications") else ""])),
                 ))
             if p + 1 >= (d.get("totalPages") or 1):
                 break

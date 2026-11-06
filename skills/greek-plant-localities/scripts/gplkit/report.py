@@ -11,7 +11,7 @@ from .outputs import has_xy, read_csv
 
 START, END = "<!-- CLAUDE-SYNTHESIS-START -->", "<!-- CLAUDE-SYNTHESIS-END -->"
 PLACEHOLDER = ("_Not written yet. Claude fills this section after reading the leads, the flora text hits and the "
-               "candidate sites (see SKILL.md, step 5)._")
+               "candidate sites (see SKILL.md, step 6)._")
 
 
 def _md_table(rows, cols, limit=None):
@@ -86,18 +86,23 @@ Generated {dt.date.today():%Y-%m-%d} by greek-plant-localities. Query: “{nm['q
 {_md_table(src_rows, ["source", "records", "with coordinates", "generalised/withheld"])}
 Herbaria / institutions (unique records): {', '.join(f'{k} {v}' for k, v in inst.most_common(20)) or '—'}
 
+Evidence (unique records): {', '.join(f'{k} {v}' for k, v in collections.Counter(r.get('evidence') or '?' for r in prim).most_common()) or '—'}.
+A specimen, sample or cited specimen means material is deposited somewhere, so the identification can be checked again.
+
 ### Candidate sites ({len(sites)})
 
 Clusters (1 km) of unique records with precise coordinates (uncertainty ≤ 5 km, not generalised), newest first.
 Also in `candidate_sites.csv`, the GeoPackage, the KML and the GPX.
+{sum(1 for x in sites if x.get('herbaria'))} of {len(sites)} sites have a herbarium specimen or other deposited sample (`herbaria`, including duplicate sheets in other herbaria); the others are known only from observations or literature.
+In the KML these are filled circles, the others open diamonds; in the GPX, flags versus pins.
 
-{_md_table(sites, ["site_id", "latitude", "longitude", "n_records", "sources", "last_year", "best_uncertainty_m", "example_locality"], 60)}
+{_md_table(sites, ["site_id", "latitude", "longitude", "n_records", "herbaria", "sources", "last_year", "best_uncertainty_m", "example_locality"], 60)}
 ### Candidate areas ({len(areas)})
 
 10 km clusters of all unique records with coordinates, including generalised ones (DiSSCo Hellas 10 km grid, obscured iNaturalist).
 These are areas where the species is known but no precise site is published: confirm them in the field or ask the curators or observers.
 
-{_md_table(areas, ["site_id", "latitude", "longitude", "n_records", "n_generalised", "sources", "last_year", "example_locality"], 60)}
+{_md_table(areas, ["site_id", "latitude", "longitude", "n_records", "n_generalised", "herbaria", "sources", "last_year", "example_locality"], 60)}
 ### Records without precise coordinates
 
 {sum(1 for r in prim if not has_xy(r))} unique records have no coordinates, {sum(1 for r in prim if r.get('precision') == 'placed')} have a pin placed at the most probable place from their locality text, and {sum(1 for r in prim if r.get('precision') == 'approximate')} have generalised, withheld or > 5 km coordinates.

@@ -4,6 +4,7 @@ from __future__ import annotations
 import csv
 import datetime as dt
 import math
+import re
 import sqlite3
 import struct
 from pathlib import Path
@@ -75,6 +76,63 @@ def precision(r) -> str:
     return "precise"
 
 
+# ------------------------------------------------------------------ vouchers
+# Evidence behind a record. Deposited material can be checked again (identification, DNA):
+# herbarium specimens, other samples (DNA, tissue, seed, living collections) and specimens cited in literature.
+VOUCHERED = ("specimen", "sample", "cited specimen")
+
+
+def evidence(r) -> str:
+    """'specimen' (herbarium sheet), 'sample' (DNA, tissue, seed or living collection), 'cited specimen'
+    (a specimen cited in literature), 'observation', 'literature' (no specimen cited) or 'other'."""
+    if str(r.get("source") or "").startswith("Literature"):  # institution = herbarium of the cited specimen
+        return "cited specimen" if r.get("institution") or r.get("voucher") else "literature"
+    b = re.sub(r"[^a-z]", "", str(r.get("basis") or "").lower())
+    if "observation" in b or r.get("institution") == "iNaturalist":
+        return "observation"
+    if b in ("materialsample", "livingspecimen"):
+        return "sample"
+    if b == "materialcitation":
+        return "cited specimen"
+    if "specimen" in b or (not b and r.get("source") in ("DiSSCo Hellas", "JACQ")):  # both list herbarium sheets only
+        return "specimen"
+    return "other"
+
+
+def _voucher_label(r) -> str:
+    """'B 10 0196469', 'LD 1234567', or 'LD Runemark & Snogerup 1958' for a specimen cited in literature."""
+    if str(r.get("source") or "").startswith("Literature"):
+        return " ".join(filter(None, [str(r.get("institution") or "?"), str(r.get("voucher") or "")]))
+    inst, cat = str(r.get("institution") or ""), str(r.get("catalog_number") or "")
+    if inst and cat.replace(" ", "").upper().startswith(inst.replace(" ", "").upper()):
+        return cat
+    return " ".join(filter(None, [inst, cat])) or "herbarium not given"
+
+
+def _herbaria(r) -> list[str]:
+    """Herbaria holding the record's material. A literature row may list several codes ("K, LD"); "?" means
+    the source cites a specimen without saying where."""
+    inst = str(r.get("institution") or "").strip()
+    names = [h.strip() for h in re.split(r"[,;]", inst)] if str(r.get("source") or "").startswith("Literature") else [inst]
+    return [h if h and h != "?" else "herbarium not named" for h in names if h or len(names) == 1]
+
+
+def add_vouchers(recs: list[dict]) -> None:
+    """Set `evidence` on every record, and on each record the herbaria and specimens of its duplicate
+    group (`herbaria`, `vouchers`): the same gathering is often kept in several herbaria."""
+    groups: dict[str, list[dict]] = {}
+    for r in recs:
+        r["evidence"] = evidence(r)
+        groups.setdefault(str(r.get("dup_group") or "") or f"single:{id(r)}", []).append(r)
+    for members in groups.values():
+        v = [m for m in members if m["evidence"] in VOUCHERED]
+        herbaria = sorted({h for m in v for h in _herbaria(m)})
+        labels = list(dict.fromkeys(_voucher_label(m) for m in v))
+        for m in members:
+            m["herbaria"] = "; ".join(herbaria)  # institution names can contain commas
+            m["vouchers"] = "; ".join(labels)[:500]
+
+
 # ------------------------------------------------------------------ clustering
 def haversine_m(a, b) -> float:
     la1, lo1, la2, lo2 = map(math.radians, (a[0], a[1], b[0], b[1]))
@@ -126,6 +184,9 @@ def candidate_sites(recs: list[dict], radius_m: float = 1000, max_uncertainty_m:
         years = [int(float(pts[i]["year"])) for i in members if _num(pts[i].get("year"))]
         uncs = [_num(pts[i].get("uncertainty_m")) for i in members if _num(pts[i].get("uncertainty_m")) is not None]
         locs = [str(pts[i].get("locality") or "") for i in members if pts[i].get("locality")]
+        vouchered = [i for i in members if pts[i].get("herbaria")]
+        herbaria = sorted({h.strip() for i in vouchered for h in str(pts[i]["herbaria"]).split(";") if h.strip()})
+        v_years = [int(float(pts[i]["year"])) for i in vouchered if _num(pts[i].get("year"))]
         sites.append({
             "latitude": round(lat, 5), "longitude": round(lon, 5), "n_records": len(members),
             "sources": ", ".join(sorted({pts[i]["source"] for i in members})),
@@ -133,6 +194,9 @@ def candidate_sites(recs: list[dict], radius_m: float = 1000, max_uncertainty_m:
             "best_uncertainty_m": min(uncs) if uncs else "",
             "example_locality": max(locs, key=len)[:200] if locs else "",
             "n_generalised": sum(1 for i in members if pts[i].get("coords_generalised") == "yes"),
+            # records backed by a deposited specimen or sample, counting duplicates in other herbaria
+            "n_vouchered": len(vouchered), "herbaria": "; ".join(herbaria),
+            "last_voucher_year": max(v_years) if v_years else "",
             "record_ids": " ".join(pts[i]["record_id"] for i in members)[:1000],
         })
     sites.sort(key=lambda s: (-(s["last_year"] or 0), -s["n_records"]))
@@ -242,7 +306,10 @@ STYLE = {"site": "ff0000ff", "occurrence": "ff00aaff", "literature": "ffff00ff",
 LEGEND = ("Red: candidate sites. Orange: records with precise coordinates. Magenta: literature localities with "
           "coordinates given in the source. Blue: pins placed at the most probable place from the locality text "
           "(see the ± radius). Grey: generalised or withheld coordinates, uncertainty above 5 km, and 10 km "
-          "candidate areas. Green: Natura 2000 site centroids.")
+          "candidate areas. Green: Natura 2000 site centroids. Shape: filled circle = a herbarium specimen or other "
+          "deposited sample exists (herbaria in the description); open diamond = known only from observations "
+          "or literature.")
+ICONS = {"": "placemark_circle", "_nov": "open-diamond"}  # style suffix "_nov": no voucher
 
 
 def _placemark(name, desc, lat, lon, style):
@@ -252,9 +319,9 @@ def _placemark(name, desc, lat, lon, style):
 
 
 def write_kml(path: Path, title: str, folders: dict[str, list[tuple[str, str, float, float, str]]]) -> None:
-    styles = "".join(f'<Style id="{k}"><IconStyle><color>{v}</color><scale>{1.2 if k == "site" else 0.8}</scale>'
-                     f'<Icon><href>http://maps.google.com/mapfiles/kml/shapes/placemark_circle.png</href></Icon>'
-                     f'</IconStyle></Style>' for k, v in STYLE.items())
+    styles = "".join(f'<Style id="{k}{suf}"><IconStyle><color>{v}</color><scale>{1.2 if k == "site" else 0.8}</scale>'
+                     f'<Icon><href>http://maps.google.com/mapfiles/kml/shapes/{icon}.png</href></Icon>'
+                     f'</IconStyle></Style>' for k, v in STYLE.items() for suf, icon in ICONS.items())
     body = "".join(f"<Folder><name>{escape(fname)}</name>" + "".join(_placemark(*p) for p in pms) + "</Folder>"
                    for fname, pms in folders.items())
     path.write_text('<?xml version="1.0" encoding="UTF-8"?><kml xmlns="http://www.opengis.net/kml/2.2"><Document>'
