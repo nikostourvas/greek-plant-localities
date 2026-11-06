@@ -11,6 +11,7 @@ from pathlib import Path
 from xml.sax.saxutils import escape
 
 from .herbaria import NOT_NAMED, canonical
+from .occurrences import _norm, _surname
 
 
 def write_csv(path: Path, rows: list[dict], fields: list[str] | None = None) -> None:
@@ -133,6 +134,95 @@ def add_vouchers(recs: list[dict]) -> None:
         for m in members:
             m["herbaria"] = "; ".join(herbaria)  # institution names can contain commas
             m["vouchers"] = "; ".join(labels)[:500]
+
+
+# ------------------------------------------------------------------ genetic data
+def _record_keys(r) -> set[str]:
+    keys = set()
+    cat, inst = _norm(r.get("catalog_number")), _norm(r.get("institution"))
+    if len(cat) >= 4:
+        keys |= {f"v:{cat}", f"v:{inst}{cat}"}
+    sur, num = _surname(r.get("collector")), _norm(r.get("record_number"))
+    if sur and num:
+        keys.add(f"c:{sur}:{num}")
+    return keys
+
+
+def _sequence_keys(q) -> set[str]:
+    """Keys from a voucher such as 'M:Podlech 47181', 'B 10 0196469' or 'TAU024127', and from BOLD's field ID."""
+    keys = set()
+    v = str(q.get("specimen_voucher") or "")
+    for part in filter(None, [v, v.split(":", 1)[-1] if ":" in v else ""]):
+        if len(_norm(part)) >= 4:
+            keys.add(f"v:{_norm(part)}")
+        m = re.match(r"\s*([A-Za-zÀ-ž][A-Za-zÀ-ž.\- ]{2,}?)\s+([A-Za-z]{0,3}\s*\d[\w/-]*)\s*$", part)
+        if m:  # 'Podlech 47181' -> collector + number
+            keys.add(f"c:{_surname(m.group(1))}:{_norm(m.group(2))}")
+    sur, fid = _surname(q.get("collector")), _norm(q.get("field_id"))
+    if sur and fid:
+        keys.add(f"c:{sur}:{fid}")
+    return keys
+
+
+def _seq_label(q) -> str:
+    return f"{q.get('marker') or '?'} ({q.get('source')} {q.get('sequence_id')})"
+
+
+def link_sequences(recs: list[dict], seqs: list[dict]) -> None:
+    """Attach sequences to the records they come from. Sets `sequences` and `markers` on every record of the
+    duplicate group, and `linked_records` on the sequences. Keys, strongest first: the record's own GBIF DNA flag,
+    voucher or catalogue number, collector + number (BOLD field ID), and the same collector within 100 m."""
+    index: dict[str, list[dict]] = {}
+    for r in recs:
+        for k in _record_keys(r):
+            index.setdefault(k, []).append(r)
+    hits: dict[int, list[dict]] = {}
+    for q in seqs:
+        found = {id(r): r for k in _sequence_keys(q) for r in index.get(k, [])}
+        if not found and has_xy(q) and _surname(q.get("collector")):
+            p = (_num(q["latitude"]), _num(q["longitude"]))
+            found = {id(r): r for r in recs if has_xy(r) and _surname(r.get("collector")) == _surname(q.get("collector"))
+                     and haversine_m(p, (_num(r["latitude"]), _num(r["longitude"]))) <= 100}
+        q["linked_records"] = " ".join(r["record_id"] for r in found.values())[:300]
+        for r in found.values():
+            hits.setdefault(id(r), []).append(q)
+    groups: dict[str, list[dict]] = {}
+    for r in recs:
+        groups.setdefault(str(r.get("dup_group") or "") or f"single:{id(r)}", []).append(r)
+    for members in groups.values():
+        qs = [q for m in members for q in hits.get(id(m), [])]
+        flags = [m.get("dna") for m in members if m.get("dna")]
+        marks = {q.get("marker") or "?" for q in qs}
+        marks |= {g.strip() for f in flags for g in (f.split(":", 1)[1] if ":" in f else "").split(",") if g.strip()
+                  and "sequences" not in f}
+        labels = list(dict.fromkeys(_seq_label(q) for q in qs)) or flags
+        for m in members:
+            m["sequences"] = "; ".join(labels)[:500]
+            m["markers"] = "; ".join(sorted(marks)) or ("yes" if flags else "")
+
+
+def link_sites(sites: list[dict], recs: list[dict], seqs: list[dict], radius_m: float = 1000) -> None:
+    """Sequences per site: those of its records, plus sequences with coordinates within `radius_m`
+    (a sequenced population nearby, not necessarily the same specimen). Sets `n_sequences`, `markers`,
+    `sequence_ids` on the sites and `site_ids` on the sequences."""
+    by_id = {r["record_id"]: r for r in recs}
+    for s in sites:
+        labels, marks = [], set()
+        for rid in str(s.get("record_ids") or "").split():
+            r = by_id.get(rid) or {}
+            if r.get("sequences"):
+                labels += [x for x in r["sequences"].split("; ") if x]
+                marks |= {x for x in str(r.get("markers") or "").split("; ") if x and x != "yes"}
+        c = (_num(s["latitude"]), _num(s["longitude"]))
+        for q in seqs:
+            near = has_xy(q) and haversine_m(c, (_num(q["latitude"]), _num(q["longitude"]))) <= radius_m
+            if near or set(str(q.get("linked_records") or "").split()) & set(str(s.get("record_ids") or "").split()):
+                labels.append(_seq_label(q))
+                marks.add(q.get("marker") or "?")
+                q.setdefault("site_ids", "")
+                q["site_ids"] = " ".join(dict.fromkeys((q["site_ids"] + " " + s["site_id"]).split()))
+        labels = list(dict.fromkeys(labels))
+        s.update(n_sequences=len(labels), markers="; ".join(sorted(marks)), sequence_ids="; ".join(labels)[:500])
 
 
 # ------------------------------------------------------------------ clustering
@@ -304,14 +394,15 @@ def point_features(rows: list[dict]) -> list[tuple[dict, dict]]:
 # ------------------------------------------------------------------ KML / GPX
 # KML colours are aabbggrr
 STYLE = {"site": "ff0000ff", "occurrence": "ff00aaff", "literature": "ffff00ff", "placed": "ffff9900",
-         "generalised": "ff888888", "natura": "ff00ff00"}
+         "generalised": "ff888888", "natura": "ff00ff00", "dna": "ffcc3399"}
 LEGEND = ("Red: candidate sites. Orange: records with precise coordinates. Magenta: literature localities with "
           "coordinates given in the source. Blue: pins placed at the most probable place from the locality text "
           "(see the ± radius). Grey: generalised or withheld coordinates, uncertainty above 5 km, and 10 km "
           "candidate areas. Green: Natura 2000 site centroids. Shape: filled circle = a herbarium specimen or other "
           "deposited sample exists (herbaria in the description); open diamond = known only from observations "
-          "or literature.")
+          "or literature. Purple stars: sequences (ENA/GenBank, BOLD) with coordinates.")
 ICONS = {"": "placemark_circle", "_nov": "open-diamond"}  # style suffix "_nov": no voucher
+ICON_FOR = {"dna": "star"}
 
 
 def _placemark(name, desc, lat, lon, style):
@@ -322,7 +413,7 @@ def _placemark(name, desc, lat, lon, style):
 
 def write_kml(path: Path, title: str, folders: dict[str, list[tuple[str, str, float, float, str]]]) -> None:
     styles = "".join(f'<Style id="{k}{suf}"><IconStyle><color>{v}</color><scale>{1.2 if k == "site" else 0.8}</scale>'
-                     f'<Icon><href>http://maps.google.com/mapfiles/kml/shapes/{icon}.png</href></Icon>'
+                     f'<Icon><href>http://maps.google.com/mapfiles/kml/shapes/{ICON_FOR.get(k, icon)}.png</href></Icon>'
                      f'</IconStyle></Style>' for k, v in STYLE.items() for suf, icon in ICONS.items())
     body = "".join(f"<Folder><name>{escape(fname)}</name>" + "".join(_placemark(*p) for p in pms) + "</Folder>"
                    for fname, pms in folders.items())

@@ -66,6 +66,13 @@ All endpoints tested live with curl unless marked X (unverified / unreachable fr
 - `https://sweetgum.nybg.org/science/api/v1/institutions/<CODE>` → organization, address, irn (page: `https://sweetgum.nybg.org/science/ih/herbarium-details/?irn=<irn>`). The `?code=` filter on `/institutions` is ignored and returns all ~4900 herbaria.
 - Database-specific names are mapped to IH codes in `gplkit/herbaria.py` (NHMW → W, NMNHG → ATH, HB-NKUA → ATHU, HB-AUTH → TAU, MNHN → P). Add new ones there.
 
+### Genetic data **[auto]** (`gplkit/genetic.py`; no keys)
+- ENA Portal API (all INSDC data: GenBank, ENA, DDBJ exchange daily, so NCBI E-utilities are not needed): `https://www.ebi.ac.uk/ena/portal/api/search?result=sequence|read_run|sample|assembly&query=tax_tree(<taxid>)&fields=...&format=json`. Field names via `/returnFields?result=...`; `sequence` has `location` ("41.2 N 26.3 E"), not `lat`/`lon`. `country` is often empty: the publication title (`/ena/browser/api/embl/<acc>`, `RT` lines; not `RL`, which is the submitter address) often names the place.
+- ENA taxonomy `ena/taxonomy/rest/any-name/<name>` does not resolve synonyms (Acinos graveolens → nothing; Clinopodium graveolens → 751796), so every core name is looked up.
+- BOLD v5 public portal API: `portal.boldsystems.org/api/query/preprocessor?query=tax:<name>` → `api/query?query=<matched>&extent=full` → `query_id` → `api/documents/<query_id>/download?format=tsv`. The v4 API (`v4.boldsystems.org/index.php/API_Public/...`) is offline. BOLD mines GenBank (process IDs `GBxxx`): de-duplicated against ENA via `insdc_acs`. BOLDconnectR (R) needs an API key; the portal API does not.
+- GBIF: `isSequenced=true`; DNA-derived-data extension (`target_gene` = MIxS 0000044) and GGBN extensions (`dwcaExtension=http://data.ggbn.org/schemas/ggbn/terms/MaterialSample`) mark sequenced records and DNA-bank samples; `fieldNumber` matches BOLD `fieldid`.
+- GGBN API (`www.ggbn.org/ggbn_portal/api/search?getSampletype&name=<genus>`): counts only, no records; species names unknown to GGBN return an HTML page.
+
 ## 2. Conservation / monitoring
 - Red Data Book **[auto]** of Rare & Threatened Plants of Greece (Phitos et al. 2009) on Plazi (146 treatments, CC0): https://treatment.plazi.org/GgServer/summary/FFAEB063BD0FFFBDD906FF87393BFF92
 - Natura 2000 (EEA) **[auto]** SDF tables + GeoPackage; species per site (no points). ArcGIS REST: bio.discomap.eea.europa.eu/.../Natura2000Species/MapServer

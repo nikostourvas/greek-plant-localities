@@ -37,8 +37,47 @@ def write_text_hits_md(path: Path, hits: list[dict]) -> None:
     path.write_text("".join(parts), encoding="utf-8")
 
 
+def _genetic_section(sites, seqs, ggbn, leads) -> str:
+    from .literature import is_genetic  # also flags leads.csv files written before the `genetic` column existed
+    seqs = seqs or []
+    by_kind = collections.Counter(f"{q.get('source')} {q.get('kind')}" for q in seqs)
+    by_marker = collections.Counter(q.get("marker") or "?" for q in seqs)
+    by_origin = collections.Counter(q.get("origin") or "?" for q in seqs)
+    seq_sites = [s for s in sites if s.get("sequence_ids")]
+    rank = {"Greece": 0, "Greece (publication)": 1, "possibly Greece (coordinates)": 2, "unknown": 3}
+    check = sorted((q for q in seqs if not q.get("site_ids")), key=lambda q: rank.get(q.get("origin"), 4))
+    gen_leads = [l for l in leads or [] if l.get("genetic") == "yes" or is_genetic(l)]
+    g = "; ".join(f"{k}: {', '.join(f'{t} {n}' for t, n in v.items())}" for k, v in (ggbn or {}).items()) or "—"
+    return f"""## Genetic data
+
+Sequences, read runs and assemblies in ENA/GenBank (INSDC) and barcodes in BOLD, from Greece or of unknown origin
+(records from other countries are left out). Also in `sequences.csv`, the GeoPackage layer `sequences` and the KML.
+
+- **By source:** {', '.join(f'{k} {v}' for k, v in by_kind.most_common()) or 'none found'}
+- **Markers:** {', '.join(f'{k} {v}' for k, v in by_marker.most_common()) or '—'}
+- **Origin:** {', '.join(f'{k} {v}' for k, v in by_origin.most_common()) or '—'}. "Greece (publication)" means the record has no country or coordinates but its publication's title names Greece or a Greek place.
+- **Sites with sequences:** {len(seq_sites)} of {len(sites)} candidate sites (columns `markers`, `sequence_ids`; a sequence counts for a site if it comes from one of the site's records or lies within 1 km).
+- **DNA and tissue banks (GGBN, per genus; no localities):** {g}. Search https://www.ggbn.org/ggbn_portal/ for the samples.
+
+{_md_table(seq_sites, ["site_id", "markers", "n_sequences", "sequence_ids", "herbaria", "example_locality"], 60)}
+### Sequences not at a candidate site ({len(check)})
+
+Greek ones first. Some come from a record with generalised coordinates (`linked_records`); for the others, read the
+publication or the voucher to find where they were collected.
+
+{_md_table(check, ["source", "sequence_id", "marker", "origin", "specimen_voucher", "linked_records", "collection_date", "title"], 40)}
+### Genetic studies among the literature leads ({len(gen_leads)})
+
+{_md_table(gen_leads, ["year", "title", "authors", "url"], 30)}
+To download the sequences: accessions go into Biopython (`Bio.Entrez.efetch`), EDirect (`efetch -db nuccore`) or ENA's `enaDataGet`;
+BOLD process IDs into BOLDconnectR (`bold.fetch`) or the BOLD portal.
+
+"""
+
+
 def write_report(d: Path, nm: dict, recs: list[dict], sites: list[dict], n2k: list[dict], areas: list[dict],
-                 herb: list[dict] | None = None) -> None:
+                 herb: list[dict] | None = None, seqs: list[dict] | None = None, ggbn: dict | None = None,
+                 leads: list[dict] | None = None) -> None:
     rp = d / "report.md"
     synthesis = PLACEHOLDER
     if rp.exists():
@@ -116,7 +155,7 @@ These are areas where the species is known but no precise site is published: con
 Their locality text is in `occurrences.csv`. Pins for coordinate-less records go in `georeferenced.csv` (SKILL.md, step 5).
 In the maps, placed pins are blue and approximate ones grey (GeoPackage layers `occurrences_placed` and `occurrences_approximate`; GPX `*_approximate.gpx`).
 
-## Natura 2000 sites listing the species ({len(n2k)})
+{_genetic_section(sites, seqs, ggbn, leads)}## Natura 2000 sites listing the species ({len(n2k)})
 
 {_md_table(n2k, ["site_code", "site_name", "population_rating", "pop_min", "pop_max", "unit", "data_quality", "sdf_url"])}
 Article 17 (2019–2024) distribution: {'see layer `art17_distribution` in the GeoPackage' if (d / 'art17_grid.geojson').exists() else 'not available (species not in the Habitats Directive annexes, or sensitive)'}.

@@ -13,7 +13,21 @@ from bs4 import BeautifulSoup
 
 from . import net
 
-LEAD_FIELDS = ["source", "kind", "title", "authors", "year", "institution", "url", "matched", "abstract"]
+LEAD_FIELDS = ["source", "kind", "title", "authors", "year", "institution", "url", "matched", "genetic", "abstract"]
+# studies with genetic data (their samples may not be in GenBank/BOLD with coordinates). Specific terms count
+# anywhere; broad words (DNA, molecular, chloroplast) only in the title, as abstracts use them loosely.
+GENETIC_ACRONYMS = re.compile(r"\bITS[12]?\b|cpDNA|\bSSRs?\b|\bAFLPs?\b|\bRAD-?seq|\bddRAD|\bGBS\b|\bSNPs?\b|"
+                              r"\bRAPDs?\b|\bISSRs?\b|\bnrDNA\b")  # case-sensitive: "its" is not ITS
+GENETIC = re.compile(r"microsatellite|phylogeograph|genetic (diversity|structure|variation|differentiation)|"
+                     r"population genetic|barcod|plastome|phylogen|γενετικ", re.I)
+GENETIC_TITLE = re.compile(r"\bDNA\b|molecular|genomic|chloroplast|plastid|μοριακ", re.I)
+
+
+def is_genetic(lead: dict) -> bool:
+    if "dataset" in str(lead.get("kind") or "").lower():
+        return False
+    text = f"{lead.get('title')} {lead.get('abstract')}"
+    return bool(GENETIC_ACRONYMS.search(text) or GENETIC.search(text) or GENETIC_TITLE.search(str(lead.get("title"))))
 
 GREEK_CONTEXT = "(Greece OR Greek OR Hellas OR Crete OR Kriti OR Peloponnese OR Peloponnisos OR Aegean OR Macedonia OR Thrace OR Epirus OR Ionian)"
 
@@ -279,4 +293,6 @@ def harvest(names: dict, sources=None) -> list[dict]:
             leads += SOURCES[s](names)
         except Exception as e:
             net.log(s, "error", f"{type(e).__name__}: {e}")
+    for lead in leads:
+        lead["genetic"] = "yes" if is_genetic(lead) else ""
     return leads

@@ -13,7 +13,7 @@ from .names import canonical
 FIELDS = [
     "record_id", "source", "source_url", "scientific_name", "basis", "institution", "catalog_number",
     "collector", "record_number", "event_date", "year", "country", "region", "locality", "elevation_m",
-    "latitude", "longitude", "uncertainty_m", "coords_generalised", "license", "notes", "dup_group",
+    "latitude", "longitude", "uncertainty_m", "coords_generalised", "license", "dna", "notes", "dup_group",
     "is_primary",
 ]
 
@@ -38,6 +38,26 @@ def _herbarium_from_catalog(cat) -> str:
     "L.2868810", "TAU024127"), for records that do not name their herbarium."""
     m = re.match(r"^([A-Z]{1,6})[\s.:\-]*\d", str(cat or ""))
     return m.group(1) if m else ""
+
+
+DNA_EXT = "http://rs.gbif.org/terms/1.0/DNADerivedData"
+GGBN_EXT = "http://data.ggbn.org/schemas/ggbn/terms/"
+
+
+def _gbif_dna(r: dict) -> str:
+    """'DNA-derived data: rbcL', 'GGBN material sample', associated sequences, or '' (GBIF record)."""
+    ext = r.get("extensions") or {}
+    out = []
+    if ext.get(DNA_EXT):
+        genes = sorted({str(v) for e in ext[DNA_EXT] for k, v in e.items() if k.endswith("0000044") and v})  # MIxS target_gene
+        out.append("DNA-derived data" + (f": {', '.join(genes)}" if genes else ""))
+    if any(k.startswith(GGBN_EXT) for k in ext):
+        out.append("GGBN material sample (DNA/tissue bank)")
+    if r.get("associatedSequences"):
+        out.append(f"sequences: {r['associatedSequences']}")
+    if r.get("isSequenced") and not out:
+        out.append("sequenced")
+    return "; ".join(out)
 
 
 def _herbarium_code(catalog, collection_code, basis) -> str:
@@ -133,13 +153,13 @@ def gbif(names: dict) -> list[dict]:
             basis=r.get("basisOfRecord"),
             institution=r.get("institutionCode") or _herbarium_code(r.get("catalogNumber"), r.get("collectionCode"), r.get("basisOfRecord")),
             catalog_number=r.get("catalogNumber"), collector=r.get("recordedBy"),
-            record_number=r.get("recordNumber"), event_date=r.get("eventDate", "")[:10],
+            record_number=r.get("recordNumber") or r.get("fieldNumber"), event_date=r.get("eventDate", "")[:10],
             year=r.get("year"), country=r.get("countryCode"), region=r.get("stateProvince"),
             locality=r.get("locality") or r.get("verbatimLocality"),
             elevation_m=r.get("elevation"), latitude=r.get("decimalLatitude"),
             longitude=r.get("decimalLongitude"), uncertainty_m=r.get("coordinateUncertaintyInMeters"),
             coords_generalised="yes" if r.get("dataGeneralizations") or "COORDINATE_ROUNDED" in issues else "",
-            license=r.get("license"),
+            license=r.get("license"), dna=_gbif_dna(r),
             notes="; ".join(filter(None, [r.get("datasetName"), ",".join(issues),
                                           f"det. {r['identifiedBy']} {str(r.get('dateIdentified') or '')[:10]}".strip()
                                           if r.get("identifiedBy") else "",

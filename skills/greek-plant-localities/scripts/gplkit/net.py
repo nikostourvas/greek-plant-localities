@@ -25,6 +25,9 @@ HOST_DELAY = {
     "nominatim.openstreetmap.org": 1.1,
     "www.openarchives.gr": 2.5,
     "www.didaktorika.gr": 2.5,
+    "www.ebi.ac.uk": 0.4,  # ENA allows 50 requests/s; stay well below
+    "portal.boldsystems.org": 1.0,
+    "www.ggbn.org": 1.0,
 }
 DEFAULT_DELAY = 1.0
 GREEK_ACADEMIC_DELAY = 3.0  # *.gr hosts not listed above

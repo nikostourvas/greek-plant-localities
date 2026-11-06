@@ -82,12 +82,15 @@ It writes to `<output_root>/<Genus_species>_<date>/`:
 | `literature_localities.csv` | **empty; you fill it** (steps 3–5) |
 | `georeferenced.csv` | **empty; you fill it** (step 5): pins for records in `occurrences.csv` that have no coordinates, or wrong ones, by `record_id` |
 | `candidate_sites.csv` | 1 km clusters of precise records: candidate sampling sites. `herbaria` / `n_vouchered` say where a specimen or other deposited sample from the site is kept (duplicate sheets in other herbaria included); empty means observations or literature only |
+| `sequences.csv` | genetic data from Greece or of unknown origin: ENA/GenBank sequences, read runs, samples and assemblies, and BOLD barcodes (public, no key). `origin`: Greece, Greece (publication) when only the paper's title names the place, possibly Greece (coordinates), unknown. `linked_records` / `site_ids` show which records and candidate sites they belong to. Candidate sites get `n_sequences`, `markers`, `sequence_ids`; the map has a `sequences` layer (purple stars in the KML) |
 | `herbaria.csv` | what the herbarium codes stand for (Index Herbariorum: B = Berlin, K = Kew, LD = Lund …): name, city, country, link, and how many records and sites each herbarium holds. The report has the same table |
 | `candidate_areas.csv` | 10 km clusters including generalised records: where the species is known but no precise site is published |
 | `<sp>.gpkg`, `<sp>.kml`, `<sp>_sites.gpx`, `<sp>_approximate.gpx`, `report.md` | built outputs (GeoPackage for QGIS; KML for Google Earth or a phone; GPX for GPS units). Records are split by how far to trust the point: *precise* (source coordinates, ≤ 5 km), *placed* (pin set at the most probable place from the locality text) and *approximate* (generalised, withheld or > 5 km). They are separate GeoPackage layers and KML folders (orange or magenta, blue, grey); placed and approximate pins are also in `_approximate.gpx` |
 | `sources_log.csv` | per-source status; check it for failures |
 
 Then check `sources_log.csv`. A host that fails 2 requests in a row (timeouts or 5xx) is skipped for the rest of the run, and the log says so. If a source failed this way, re-run once with `--out <run_dir>` and `--skip` for the sources that worked; if it fails again, list it under manual follow-ups. For example, `--skip occurrences,natura,text` re-runs only the literature search, and the cache makes the rest instant.
+
+**Genetic data.** Read the "Genetic data" section of `report.md`. For sequences "not at a candidate site", check the publication or voucher where it is quick (a paper's sample table often gives the populations), and say in the synthesis which regions are already sequenced, with which markers, and by whom; genome-scale data (runs, assemblies) deserve a mention. GGBN gives genus counts only; mention them if DNA or tissue samples exist.
 
 ## Step 3: extract localities from the flora text hits
 
@@ -167,6 +170,7 @@ Then write the synthesis in `report.md`, **only between the markers `<!-- CLAUDE
   - recent records
   - several independent sources
   - precise coordinates
+  - genetic data (`markers` in `candidate_sites.csv`): say whether a site is already sequenced, and with which markers, so the user can reuse the data or choose unsampled populations
   - a herbarium specimen (`herbaria` in `candidate_sites.csv`): the identification can be checked, and a specimen revised by a specialist (see the identification history in `occurrences.csv` notes) is the best evidence
   - sites that cover the geographic and environmental range (for population genetics: spread across regions and isolated populations)
 

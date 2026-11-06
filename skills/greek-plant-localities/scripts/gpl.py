@@ -22,12 +22,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from gplkit import config, geo, herbaria, literature, names as namesmod, natura, net, occurrences, outputs, report, textsearch  # noqa: E402
+from gplkit import config, genetic, geo, herbaria, literature, names as namesmod, natura, net, occurrences, outputs, report, textsearch  # noqa: E402
 
 LIT_LOC_FIELDS = ["locality", "latitude", "longitude", "uncertainty_m", "georef_method", "source_ref", "page",
                   "year", "collector_or_author", "herbarium", "voucher", "notes"]
-SITE_FIELDS = ["site_id", "latitude", "longitude", "n_records", "n_vouchered", "herbaria", "sources", "first_year",
-               "last_year", "last_voucher_year", "best_uncertainty_m", "example_locality", "record_ids"]
+SITE_FIELDS = ["site_id", "latitude", "longitude", "n_records", "n_vouchered", "herbaria", "n_sequences", "markers",
+               "sources", "first_year", "last_year", "last_voucher_year", "best_uncertainty_m", "example_locality",
+               "sequence_ids", "record_ids"]
+SEQ_FIELDS = genetic.SEQ_FIELDS + ["linked_records", "site_ids"]
 
 
 def slug(s: str) -> str:
@@ -161,6 +163,11 @@ def cmd_run(a):
         if grid:
             (d / "art17_grid.geojson").write_text(json.dumps(grid), encoding="utf-8")
         print(f"[gpl] Natura 2000: {len(sites)} sites; Article 17 cells: {len(grid['features']) if grid else 0}", file=sys.stderr)
+    if "genetic" not in skip:
+        seqs, ggbn = genetic.harvest(nm)
+        outputs.write_csv(d / "sequences.csv", seqs, SEQ_FIELDS)
+        (d / "ggbn.json").write_text(json.dumps(ggbn, indent=1), encoding="utf-8")
+        print(f"[gpl] genetic data: {len(seqs)} sequences, runs or assemblies (Greece or unknown origin)", file=sys.stderr)
     if "text" not in skip:
         hits = textsearch.search(nm, extra_paths=a.pdf or [], classic="classic" not in skip,
                                  proceedings="proceedings" not in skip)
@@ -203,9 +210,14 @@ def build(d: Path):
     for r in allrecs:
         r["precision"] = outputs.precision(r)
     outputs.add_vouchers(allrecs)
+    seqs = outputs.read_csv(d / "sequences.csv")
+    outputs.link_sequences(allrecs, seqs)
     sites = outputs.candidate_sites(allrecs)
+    outputs.link_sites(sites, allrecs, seqs)
     outputs.write_csv(d / "candidate_sites.csv", sites, SITE_FIELDS)
     areas = outputs.candidate_sites(allrecs, radius_m=10000, max_uncertainty_m=None, prefix="A")
+    outputs.link_sites(areas, allrecs, [dict(q) for q in seqs], radius_m=10000)  # copies: keep site_ids of sites
+    outputs.write_csv(d / "sequences.csv", seqs, SEQ_FIELDS)
     outputs.write_csv(d / "candidate_areas.csv", areas, SITE_FIELDS[:4] + ["n_generalised"] + SITE_FIELDS[4:])
     # what the herbarium codes stand for
     prim = [r for r in allrecs if r.get("is_primary") == "yes"]
@@ -217,6 +229,16 @@ def build(d: Path):
     herb_rows = sorted(herb.values(), key=lambda e: (-e["n_records"], e["code"]))
     outputs.write_csv(d / "herbaria.csv", herb_rows, ["code", "name", "city", "country", "n_records", "n_sites", "url"])
     n2k = outputs.read_csv(d / "natura2000_sites.csv")
+    # sequences on the map: their own coordinates, else those of the record they come from
+    by_id = {r["record_id"]: r for r in allrecs}
+    seq_points = []
+    for q in seqs:
+        rec = next((by_id[i] for i in str(q.get("linked_records") or "").split() if outputs.has_xy(by_id.get(i, {}))), None)
+        if outputs.has_xy(q):
+            seq_points.append(dict(q, position="own coordinates"))
+        elif rec:
+            seq_points.append(dict(q, latitude=rec["latitude"], longitude=rec["longitude"],
+                                   position=f"of record {rec['record_id']}"))
     layers = {
         "candidate_sites": ("POINT", outputs.point_features(sites)),
         "candidate_areas": ("POINT", outputs.point_features(areas)),
@@ -225,6 +247,7 @@ def build(d: Path):
         "occurrences_placed": ("POINT", outputs.point_features([r for r in allrecs if r["precision"] == "placed"])),
         "occurrences_approximate": ("POINT", outputs.point_features([r for r in allrecs if r["precision"] == "approximate"])),
         "natura2000_site_centroids": ("POINT", outputs.point_features(n2k)),
+        "sequences": ("POINT", outputs.point_features(seq_points)),
     }
     gp = d / "art17_grid.geojson"
     if gp.exists():
@@ -242,7 +265,8 @@ def build(d: Path):
         return " | ".join(str(x) for x in [ev, r.get("source"), other, r.get("collector"),
                                             r.get("event_date") or r.get("year"), r.get("locality"),
                                             f"±{r.get('uncertainty_m')} m" if r.get("uncertainty_m") else "",
-                                            "pin placed from the locality text" if r["precision"] == "placed" else ""] if x)
+                                            "pin placed from the locality text" if r["precision"] == "placed" else "",
+            f"DNA: {r['sequences']}" if r.get("sequences") else ""] if x)
 
     def nov(x):  # style suffix: open diamond when no specimen or sample is known
         return "" if x.get("herbaria") else "_nov"
@@ -251,7 +275,8 @@ def build(d: Path):
         v = (f"specimens in {where(s['herbaria'])} ({s['n_vouchered']} rec., last {s['last_voucher_year'] or '?'})"
              if s["herbaria"] else "no specimen known: observations or literature only")
         g = f" ({s['n_generalised']} generalised)" if generalised else ""
-        return f"{v}; {s['n_records']} rec.{g}; {s['sources']}; last {s['last_year']}; {s['example_locality']}"
+        dna = f"; DNA: {s['sequence_ids']}" if s.get("sequence_ids") else ""
+        return f"{v}{dna}; {s['n_records']} rec.{g}; {s['sources']}; last {s['last_year']}; {s['example_locality']}"
     folders = {
         "Candidate sites": [(s["site_id"], site_desc(s), s["latitude"], s["longitude"], "site" + nov(s)) for s in sites],
         "Candidate areas (10 km, incl. generalised records)": [(a["site_id"], site_desc(a, True), a["latitude"], a["longitude"],
@@ -265,6 +290,10 @@ def build(d: Path):
                                                           for r in prim if r["precision"] == "approximate"],
         "Natura 2000 sites listing the species (centroids)": [(f"{s['site_code']} {s['site_name']}", f"pop {s.get('pop_min')}-{s.get('pop_max')} {s.get('unit')}",
                                                                s["latitude"], s["longitude"], "natura") for s in n2k if outputs.has_xy(s)],
+        "Genetic data (ENA/GenBank, BOLD)": [(q["sequence_id"], " | ".join(filter(None, [
+            f"{q.get('marker')} ({q.get('source')} {q.get('kind')})", q.get("origin"), q.get("specimen_voucher"),
+            q.get("collector"), q.get("collection_date"), q.get("locality") or q.get("country"), q.get("position"),
+            q.get("url")])), q["latitude"], q["longitude"], "dna") for q in seq_points],
     }
     outputs.write_kml(d / f"{sp}.kml", nm["accepted"], folders)
     # Garmin symbols: a flag where a specimen or sample exists, a pin where there is none
@@ -275,7 +304,9 @@ def build(d: Path):
         ("~" + r["record_id"], desc(r)[:200], r["latitude"], r["longitude"],
          ("Flag, " if r.get("herbaria") else "Pin, ") + ("Blue" if r["precision"] == "placed" else "Green"))
         for r in prim if r["precision"] in ("placed", "approximate")])
-    report.write_report(d, nm, allrecs, sites, n2k, areas, herb_rows)
+    ggbn_path = d / "ggbn.json"
+    ggbn = json.loads(ggbn_path.read_text(encoding="utf-8")) if ggbn_path.exists() else {}
+    report.write_report(d, nm, allrecs, sites, n2k, areas, herb_rows, seqs, ggbn, outputs.read_csv(d / "leads.csv"))
     print(f"[gpl] built: {d}/report.md, {sp}.gpkg, {sp}.kml, {sp}_sites.gpx, {sp}_approximate.gpx, candidate_sites.csv", file=sys.stderr)
 
 
@@ -286,7 +317,7 @@ def main():
     r.add_argument("species")
     r.add_argument("--out", help="output directory (default: <output_root>/<Species>_<date>)")
     r.add_argument("--pdf", action="append", help="extra PDF file or folder to search (repeatable)")
-    r.add_argument("--skip", help="comma list: occurrences,natura,text,classic,proceedings,literature")
+    r.add_argument("--skip", help="comma list: occurrences,natura,genetic,text,classic,proceedings,literature")
     n = sub.add_parser("names", help="resolve names and synonyms (run this first and review the list)")
     n.add_argument("species")
     n.add_argument("--out", help="run directory whose saved name edits to include")
