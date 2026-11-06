@@ -211,8 +211,9 @@ def jacq(names: dict) -> list[dict]:
                 if sid in seen:
                     continue
                 seen.add(sid)
-                # the herbarium: JACQ's owner abbreviation, else the collection code or the catalogue number
-                herb = (jq.get("jacq:OwnerOrganizationAbbrev") or dwc.get("dwc:collectionCode")
+                # the herbarium: the collection code (Index Herbariorum code, e.g. W), else JACQ's owner
+                # abbreviation (NHMW for W) or the catalogue number
+                herb = (dwc.get("dwc:collectionCode") or jq.get("jacq:OwnerOrganizationAbbrev")
                         or _herbarium_from_catalog(dwc.get("dwc:catalogNumber")))
                 # some JACQ herbaria (e.g. B) put the catalogue number in recordNumber; the collector number is jacq:Nummer
                 rec_no = dwc.get("dwc:recordNumber")

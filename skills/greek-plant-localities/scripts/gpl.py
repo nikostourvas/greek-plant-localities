@@ -22,7 +22,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from gplkit import config, geo, literature, names as namesmod, natura, net, occurrences, outputs, report, textsearch  # noqa: E402
+from gplkit import config, geo, herbaria, literature, names as namesmod, natura, net, occurrences, outputs, report, textsearch  # noqa: E402
 
 LIT_LOC_FIELDS = ["locality", "latitude", "longitude", "uncertainty_m", "georef_method", "source_ref", "page",
                   "year", "collector_or_author", "herbarium", "voucher", "notes"]
@@ -207,6 +207,15 @@ def build(d: Path):
     outputs.write_csv(d / "candidate_sites.csv", sites, SITE_FIELDS)
     areas = outputs.candidate_sites(allrecs, radius_m=10000, max_uncertainty_m=None, prefix="A")
     outputs.write_csv(d / "candidate_areas.csv", areas, SITE_FIELDS[:4] + ["n_generalised"] + SITE_FIELDS[4:])
+    # what the herbarium codes stand for
+    prim = [r for r in allrecs if r.get("is_primary") == "yes"]
+    codes = {h for r in prim for h in r["herbaria"].split("; ") if h}
+    herb = herbaria.describe(codes)
+    for code, e in herb.items():
+        e["n_records"] = sum(1 for r in prim if code in r["herbaria"].split("; "))
+        e["n_sites"] = sum(1 for s in sites if code in s["herbaria"].split("; "))
+    herb_rows = sorted(herb.values(), key=lambda e: (-e["n_records"], e["code"]))
+    outputs.write_csv(d / "herbaria.csv", herb_rows, ["code", "name", "city", "country", "n_records", "n_sites", "url"])
     n2k = outputs.read_csv(d / "natura2000_sites.csv")
     layers = {
         "candidate_sites": ("POINT", outputs.point_features(sites)),
@@ -224,21 +233,22 @@ def build(d: Path):
     sp = slug(nm["accepted"])
     outputs.write_gpkg(d / f"{sp}.gpkg", layers)
 
+    def where(h):  # "B (Berlin, Germany); LD (Lund, Sweden)"
+        return "; ".join(herbaria.short(c, herb) for c in h.split("; ") if c)
+
     def desc(r):
-        ev = f"{r['evidence']}: {r['vouchers']}" if r.get("vouchers") else r["evidence"]
+        ev = f"{r['evidence']}: {r['vouchers']} [{where(r['herbaria'])}]" if r.get("vouchers") else r["evidence"]
         other = "" if r.get("vouchers") else " ".join(filter(None, [r.get("institution"), r.get("catalog_number")]))
         return " | ".join(str(x) for x in [ev, r.get("source"), other, r.get("collector"),
                                             r.get("event_date") or r.get("year"), r.get("locality"),
                                             f"±{r.get('uncertainty_m')} m" if r.get("uncertainty_m") else "",
                                             "pin placed from the locality text" if r["precision"] == "placed" else ""] if x)
 
-    prim = [r for r in allrecs if r.get("is_primary") == "yes"]
-
     def nov(x):  # style suffix: open diamond when no specimen or sample is known
         return "" if x.get("herbaria") else "_nov"
 
     def site_desc(s, generalised=False):
-        v = (f"specimens in {s['herbaria']} ({s['n_vouchered']} rec., last {s['last_voucher_year'] or '?'})"
+        v = (f"specimens in {where(s['herbaria'])} ({s['n_vouchered']} rec., last {s['last_voucher_year'] or '?'})"
              if s["herbaria"] else "no specimen known: observations or literature only")
         g = f" ({s['n_generalised']} generalised)" if generalised else ""
         return f"{v}; {s['n_records']} rec.{g}; {s['sources']}; last {s['last_year']}; {s['example_locality']}"
@@ -265,7 +275,7 @@ def build(d: Path):
         ("~" + r["record_id"], desc(r)[:200], r["latitude"], r["longitude"],
          ("Flag, " if r.get("herbaria") else "Pin, ") + ("Blue" if r["precision"] == "placed" else "Green"))
         for r in prim if r["precision"] in ("placed", "approximate")])
-    report.write_report(d, nm, allrecs, sites, n2k, areas)
+    report.write_report(d, nm, allrecs, sites, n2k, areas, herb_rows)
     print(f"[gpl] built: {d}/report.md, {sp}.gpkg, {sp}.kml, {sp}_sites.gpx, {sp}_approximate.gpx, candidate_sites.csv", file=sys.stderr)
 
 

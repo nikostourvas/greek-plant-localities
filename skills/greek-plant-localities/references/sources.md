@@ -62,6 +62,10 @@ All endpoints tested live with curl unless marked X (unverified / unreachable fr
 - DiSSCo EU sandbox API: mirror of GBIF, not useful yet.
 - Print-only: Strid Atlas of the Aegean Flora (2016), Mountain Flora of Greece, Flora Hellenica, Turland et al. 1993 (Crete).
 
+### Index Herbariorum **[auto]** (NYBG; herbarium codes)
+- `https://sweetgum.nybg.org/science/api/v1/institutions/<CODE>` → organization, address, irn (page: `https://sweetgum.nybg.org/science/ih/herbarium-details/?irn=<irn>`). The `?code=` filter on `/institutions` is ignored and returns all ~4900 herbaria.
+- Database-specific names are mapped to IH codes in `gplkit/herbaria.py` (NHMW → W, NMNHG → ATH, HB-NKUA → ATHU, HB-AUTH → TAU, MNHN → P). Add new ones there.
+
 ## 2. Conservation / monitoring
 - Red Data Book **[auto]** of Rare & Threatened Plants of Greece (Phitos et al. 2009) on Plazi (146 treatments, CC0): https://treatment.plazi.org/GgServer/summary/FFAEB063BD0FFFBDD906FF87393BFF92
 - Natura 2000 (EEA) **[auto]** SDF tables + GeoPackage; species per site (no points). ArcGIS REST: bio.discomap.eea.europa.eu/.../Natura2000Species/MapServer

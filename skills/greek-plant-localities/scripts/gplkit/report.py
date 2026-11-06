@@ -37,7 +37,8 @@ def write_text_hits_md(path: Path, hits: list[dict]) -> None:
     path.write_text("".join(parts), encoding="utf-8")
 
 
-def write_report(d: Path, nm: dict, recs: list[dict], sites: list[dict], n2k: list[dict], areas: list[dict]) -> None:
+def write_report(d: Path, nm: dict, recs: list[dict], sites: list[dict], n2k: list[dict], areas: list[dict],
+                 herb: list[dict] | None = None) -> None:
     rp = d / "report.md"
     synthesis = PLACEHOLDER
     if rp.exists():
@@ -89,6 +90,12 @@ Herbaria / institutions (unique records): {', '.join(f'{k} {v}' for k, v in inst
 Evidence (unique records): {', '.join(f'{k} {v}' for k, v in collections.Counter(r.get('evidence') or '?' for r in prim).most_common()) or '—'}.
 A specimen, sample or cited specimen means material is deposited somewhere, so the identification can be checked again.
 
+### Herbaria holding specimens ({len(herb or [])})
+
+The codes in the `herbaria` columns are Index Herbariorum codes (B = Berlin, K = Kew, LD = Lund …). Also in `herbaria.csv`.
+
+{_md_table([dict(e, place=", ".join(filter(None, [e.get("city"), e.get("country")])), name=e.get("name") or "not in Index Herbariorum") for e in herb or []],
+           ["code", "name", "place", "n_records", "n_sites", "url"], 80)}
 ### Candidate sites ({len(sites)})
 
 Clusters (1 km) of unique records with precise coordinates (uncertainty ≤ 5 km, not generalised), newest first.

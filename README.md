@@ -37,7 +37,7 @@ Give it a species name (`/greek-plant-localities:greek-plant-localities Zelkova 
 - KML for Google Earth or a phone
 - GPX for GPS units
 
-In the maps, records are coloured by how far their point can be trusted: precise coordinates; a pin placed by Claude at the most probable place from the locality text (old labels, floras); or generalised and withheld coordinates. The marker shape shows whether a herbarium specimen (or another deposited sample) exists for the record or site, and the site table lists the herbaria that hold them.
+In the maps, records are coloured by how far their point can be trusted: precise coordinates; a pin placed by Claude at the most probable place from the locality text (old labels, floras); or generalised and withheld coordinates. The marker shape shows whether a herbarium specimen (or another deposited sample) exists for the record or site, and the site table lists the herbaria that hold them, with a legend of what the herbarium codes stand for (Index Herbariorum).
 
 ## Install
 

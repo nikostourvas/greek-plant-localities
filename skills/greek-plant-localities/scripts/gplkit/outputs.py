@@ -10,6 +10,8 @@ import struct
 from pathlib import Path
 from xml.sax.saxutils import escape
 
+from .herbaria import NOT_NAMED, canonical
+
 
 def write_csv(path: Path, rows: list[dict], fields: list[str] | None = None) -> None:
     fields = fields or (list(rows[0].keys()) if rows else ["empty"])
@@ -114,7 +116,7 @@ def _herbaria(r) -> list[str]:
     the source cites a specimen without saying where."""
     inst = str(r.get("institution") or "").strip()
     names = [h.strip() for h in re.split(r"[,;]", inst)] if str(r.get("source") or "").startswith("Literature") else [inst]
-    return [h if h and h != "?" else "herbarium not named" for h in names if h or len(names) == 1]
+    return [canonical(h) if h and h != "?" else NOT_NAMED for h in names if h or len(names) == 1]
 
 
 def add_vouchers(recs: list[dict]) -> None:
