@@ -37,6 +37,44 @@ def has_xy(r) -> bool:
     return _num(r.get("latitude")) is not None and _num(r.get("longitude")) is not None
 
 
+MAX_PRECISE_M = 5000  # records with a larger uncertainty point to an area, not a site
+
+# georeferenced.csv: pins Claude places for records without (or with wrong) coordinates, by record_id.
+# Kept apart from occurrences.csv so that re-runs, which rewrite occurrences.csv, keep them.
+GEOREF_FIELDS = ["record_id", "latitude", "longitude", "uncertainty_m", "georef_method", "notes"]
+
+
+def apply_georef(recs: list[dict], rows: list[dict]) -> int:
+    """Set the coordinates from georeferenced.csv on the matching records. They become 'placed',
+    unless georef_method starts with "source" (source coordinates corrected, e.g. a mistyped latitude)."""
+    by_id = {r.get("record_id"): r for r in rows if r.get("record_id") and has_xy(r)}
+    n = 0
+    for r in recs:
+        g = by_id.get(r.get("record_id"))
+        if not g:
+            continue
+        r.update(latitude=g["latitude"], longitude=g["longitude"], uncertainty_m=g.get("uncertainty_m") or "",
+                 coords_generalised="",
+                 coords_inferred="" if (g.get("georef_method") or "").lower().startswith("source") else "yes",
+                 notes="; ".join(filter(None, [r.get("notes"), f"coordinates from georeferenced.csv: {g.get('georef_method') or '?'}", g.get("notes")])))
+        n += 1
+    return n
+
+
+def precision(r) -> str:
+    """How far to trust a record's point: 'precise' (coordinates from the source, uncertainty
+    ≤ 5 km), 'approximate' (generalised, withheld or > 5 km), 'placed' (pin set from the
+    locality text, at the most probable place), or '' (no coordinates)."""
+    if not has_xy(r):
+        return ""
+    if r.get("coords_inferred") == "yes":
+        return "placed"
+    unc = _num(r.get("uncertainty_m"))
+    if r.get("coords_generalised") == "yes" or (unc is not None and unc > MAX_PRECISE_M):
+        return "approximate"
+    return "precise"
+
+
 # ------------------------------------------------------------------ clustering
 def haversine_m(a, b) -> float:
     la1, lo1, la2, lo2 = map(math.radians, (a[0], a[1], b[0], b[1]))
@@ -44,7 +82,7 @@ def haversine_m(a, b) -> float:
     return 2 * 6371000 * math.asin(math.sqrt(h))
 
 
-def candidate_sites(recs: list[dict], radius_m: float = 1000, max_uncertainty_m: float | None = 5000,
+def candidate_sites(recs: list[dict], radius_m: float = 1000, max_uncertainty_m: float | None = MAX_PRECISE_M,
                     prefix: str = "S") -> list[dict]:
     """Single-linkage clusters of primary records.
 
@@ -198,7 +236,13 @@ def point_features(rows: list[dict]) -> list[tuple[dict, dict]]:
 
 
 # ------------------------------------------------------------------ KML / GPX
-STYLE = {"site": "ff0000ff", "occurrence": "ff00aaff", "generalised": "ff888888", "natura": "ff00ff00", "literature": "ffff00ff"}
+# KML colours are aabbggrr
+STYLE = {"site": "ff0000ff", "occurrence": "ff00aaff", "literature": "ffff00ff", "placed": "ffff9900",
+         "generalised": "ff888888", "natura": "ff00ff00"}
+LEGEND = ("Red: candidate sites. Orange: records with precise coordinates. Magenta: literature localities with "
+          "coordinates given in the source. Blue: pins placed at the most probable place from the locality text "
+          "(see the ± radius). Grey: generalised or withheld coordinates, uncertainty above 5 km, and 10 km "
+          "candidate areas. Green: Natura 2000 site centroids.")
 
 
 def _placemark(name, desc, lat, lon, style):
@@ -214,11 +258,14 @@ def write_kml(path: Path, title: str, folders: dict[str, list[tuple[str, str, fl
     body = "".join(f"<Folder><name>{escape(fname)}</name>" + "".join(_placemark(*p) for p in pms) + "</Folder>"
                    for fname, pms in folders.items())
     path.write_text('<?xml version="1.0" encoding="UTF-8"?><kml xmlns="http://www.opengis.net/kml/2.2"><Document>'
-                    f"<name>{escape(title)}</name>{styles}{body}</Document></kml>", encoding="utf-8")
+                    f"<name>{escape(title)}</name><description>{escape(LEGEND)}</description>{styles}{body}</Document></kml>",
+                    encoding="utf-8")
 
 
-def write_gpx(path: Path, waypoints: list[tuple[str, str, float, float]]) -> None:
-    wpts = "".join(f'<wpt lat="{lat}" lon="{lon}"><name>{escape(n)}</name><desc>{escape(d)}</desc></wpt>'
-                   for n, d, lat, lon in waypoints)
+def write_gpx(path: Path, waypoints: list[tuple]) -> None:
+    """waypoints: (name, description, lat, lon[, symbol]); the symbol is a Garmin name such as 'Flag, Blue'."""
+    wpts = "".join(f'<wpt lat="{w[2]}" lon="{w[3]}"><name>{escape(w[0])}</name><desc>{escape(w[1])}</desc>'
+                   + (f"<sym>{escape(w[4])}</sym>" if len(w) > 4 and w[4] else "") + "</wpt>"
+                   for w in waypoints)
     path.write_text('<?xml version="1.0" encoding="UTF-8"?><gpx version="1.1" creator="greek-plant-localities" '
                     f'xmlns="http://www.topografix.com/GPX/1/1">{wpts}</gpx>', encoding="utf-8")

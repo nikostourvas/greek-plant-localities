@@ -81,7 +81,7 @@ Generated {dt.date.today():%Y-%m-%d} by greek-plant-localities. Query: “{nm['q
 
 ## Specimens and observations
 
-{len(recs)} records; {len(prim)} after removing duplicates; {sum(1 for r in prim if has_xy(r))} unique records with coordinates.
+{len(recs)} records; {len(prim)} after removing duplicates; {sum(1 for r in prim if has_xy(r))} unique records with coordinates ({sum(1 for r in prim if r.get('precision') == 'precise')} precise, {sum(1 for r in prim if r.get('precision') == 'placed')} pins placed from the locality text, {sum(1 for r in prim if r.get('precision') == 'approximate')} generalised, withheld or > 5 km).
 
 {_md_table(src_rows, ["source", "records", "with coordinates", "generalised/withheld"])}
 Herbaria / institutions (unique records): {', '.join(f'{k} {v}' for k, v in inst.most_common(20)) or '—'}
@@ -100,8 +100,9 @@ These are areas where the species is known but no precise site is published: con
 {_md_table(areas, ["site_id", "latitude", "longitude", "n_records", "n_generalised", "sources", "last_year", "example_locality"], 60)}
 ### Records without precise coordinates
 
-{sum(1 for r in prim if not has_xy(r))} unique records have no coordinates and {sum(1 for r in prim if r.get('coords_generalised') == 'yes')} have generalised ones.
-Their locality text is in `occurrences.csv`; georeference the ones that matter (SKILL.md, step 4).
+{sum(1 for r in prim if not has_xy(r))} unique records have no coordinates, {sum(1 for r in prim if r.get('precision') == 'placed')} have a pin placed at the most probable place from their locality text, and {sum(1 for r in prim if r.get('precision') == 'approximate')} have generalised, withheld or > 5 km coordinates.
+Their locality text is in `occurrences.csv`. Pins for coordinate-less records go in `georeferenced.csv` (SKILL.md, step 5).
+In the maps, placed pins are blue and approximate ones grey (GeoPackage layers `occurrences_placed` and `occurrences_approximate`; GPX `*_approximate.gpx`).
 
 ## Natura 2000 sites listing the species ({len(n2k)})
 

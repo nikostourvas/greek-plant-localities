@@ -171,6 +171,8 @@ def cmd_run(a):
         print(f"[gpl] literature leads: {len(leads)}", file=sys.stderr)
     if not (d / "literature_localities.csv").exists():
         outputs.write_csv(d / "literature_localities.csv", [], LIT_LOC_FIELDS)
+    if not (d / "georeferenced.csv").exists():
+        outputs.write_csv(d / "georeferenced.csv", [], outputs.GEOREF_FIELDS)
     # keep log rows of sources skipped in this run (partial re-runs with --skip)
     rerun = {r["source"] for r in net.LOG}
     kept = [r for r in outputs.read_csv(d / "sources_log.csv") if r["source"] not in rerun]
@@ -181,6 +183,7 @@ def cmd_run(a):
 def build(d: Path):
     nm = json.loads((d / "names.json").read_text(encoding="utf-8"))
     recs = outputs.read_csv(d / "occurrences.csv")
+    outputs.apply_georef(recs, outputs.read_csv(d / "georeferenced.csv"))
     lit = outputs.read_csv(d / "literature_localities.csv")
     lit_recs = []
     for i, r in enumerate(lit, 1):
@@ -189,9 +192,13 @@ def build(d: Path):
                   latitude=r.get("latitude"), longitude=r.get("longitude"), uncertainty_m=r.get("uncertainty_m"),
                   year=r.get("year"), collector=r.get("collector_or_author"),
                   notes=f"{r.get('source_ref')} p.{r.get('page')}; {r.get('georef_method')}; {r.get('notes')}",
-                  is_primary="yes")
+                  is_primary="yes",
+                  # a pin placed from the locality text, unless the source itself gives coordinates
+                  coords_inferred="" if (r.get("georef_method") or "").lower().startswith("source") else "yes")
         lit_recs.append(rr)
     allrecs = recs + lit_recs
+    for r in allrecs:
+        r["precision"] = outputs.precision(r)
     sites = outputs.candidate_sites(allrecs)
     outputs.write_csv(d / "candidate_sites.csv", sites,
                       ["site_id", "latitude", "longitude", "n_records", "sources", "first_year", "last_year",
@@ -204,7 +211,10 @@ def build(d: Path):
     layers = {
         "candidate_sites": ("POINT", outputs.point_features(sites)),
         "candidate_areas": ("POINT", outputs.point_features(areas)),
-        "occurrences": ("POINT", outputs.point_features(allrecs)),
+        # one layer per precision class, so that QGIS draws each in its own colour
+        "occurrences_precise": ("POINT", outputs.point_features([r for r in allrecs if r["precision"] == "precise"])),
+        "occurrences_placed": ("POINT", outputs.point_features([r for r in allrecs if r["precision"] == "placed"])),
+        "occurrences_approximate": ("POINT", outputs.point_features([r for r in allrecs if r["precision"] == "approximate"])),
         "natura2000_site_centroids": ("POINT", outputs.point_features(n2k)),
     }
     gp = d / "art17_grid.geojson"
@@ -217,7 +227,10 @@ def build(d: Path):
     def desc(r):
         return " | ".join(str(x) for x in [r.get("source"), r.get("institution"), r.get("catalog_number"), r.get("collector"),
                                             r.get("event_date") or r.get("year"), r.get("locality"),
-                                            f"±{r.get('uncertainty_m')} m" if r.get("uncertainty_m") else ""] if x)
+                                            f"±{r.get('uncertainty_m')} m" if r.get("uncertainty_m") else "",
+                                            "pin placed from the locality text" if r["precision"] == "placed" else ""] if x)
+
+    prim = [r for r in allrecs if r.get("is_primary") == "yes"]
     folders = {
         "Candidate sites": [(s["site_id"], f"{s['n_records']} rec.; {s['sources']}; last {s['last_year']}; {s['example_locality']}",
                              s["latitude"], s["longitude"], "site") for s in sites],
@@ -225,16 +238,23 @@ def build(d: Path):
                                                                a["latitude"], a["longitude"], "generalised") for a in areas],
         "Occurrences (precise)": [(r["record_id"], desc(r), r["latitude"], r["longitude"],
                                    "literature" if r["source"].startswith("Literature") else "occurrence")
-                                  for r in allrecs if outputs.has_xy(r) and r.get("is_primary") == "yes" and r.get("coords_generalised") != "yes"],
-        "Occurrences (generalised / withheld)": [(r["record_id"], desc(r), r["latitude"], r["longitude"], "generalised")
-                                                 for r in allrecs if outputs.has_xy(r) and r.get("is_primary") == "yes" and r.get("coords_generalised") == "yes"],
+                                  for r in prim if r["precision"] == "precise"],
+        "Occurrences (pin placed at the most probable place)": [(r["record_id"], desc(r), r["latitude"], r["longitude"], "placed")
+                                                                for r in prim if r["precision"] == "placed"],
+        "Occurrences (generalised, withheld or > 5 km)": [(r["record_id"], desc(r), r["latitude"], r["longitude"], "generalised")
+                                                          for r in prim if r["precision"] == "approximate"],
         "Natura 2000 sites listing the species (centroids)": [(f"{s['site_code']} {s['site_name']}", f"pop {s.get('pop_min')}-{s.get('pop_max')} {s.get('unit')}",
                                                                s["latitude"], s["longitude"], "natura") for s in n2k if outputs.has_xy(s)],
     }
     outputs.write_kml(d / f"{sp}.kml", nm["accepted"], folders)
-    outputs.write_gpx(d / f"{sp}_sites.gpx", [(s["site_id"], s["example_locality"][:100], s["latitude"], s["longitude"]) for s in sites])
+    outputs.write_gpx(d / f"{sp}_sites.gpx", [(s["site_id"], s["example_locality"][:100], s["latitude"], s["longitude"], "Flag, Red")
+                                              for s in sites])
+    # approximate points as a separate file, so that GPS apps show them in another colour
+    outputs.write_gpx(d / f"{sp}_approximate.gpx", [
+        ("~" + r["record_id"], desc(r)[:200], r["latitude"], r["longitude"], "Flag, Blue" if r["precision"] == "placed" else "Flag, Green")
+        for r in prim if r["precision"] in ("placed", "approximate")])
     report.write_report(d, nm, allrecs, sites, n2k, areas)
-    print(f"[gpl] built: {d}/report.md, {sp}.gpkg, {sp}.kml, {sp}_sites.gpx, candidate_sites.csv", file=sys.stderr)
+    print(f"[gpl] built: {d}/report.md, {sp}.gpkg, {sp}.kml, {sp}_sites.gpx, {sp}_approximate.gpx, candidate_sites.csv", file=sys.stderr)
 
 
 def main():

@@ -37,6 +37,8 @@ Give it a species name (`/greek-plant-localities:greek-plant-localities Zelkova 
 - KML for Google Earth or a phone
 - GPX for GPS units
 
+In the maps, records are coloured by how far their point can be trusted: precise coordinates; a pin placed by Claude at the most probable place from the locality text (old labels, floras); or generalised and withheld coordinates.
+
 ## Install
 
 You need Claude Code and [uv](https://docs.astral.sh/uv/getting-started/installation/). uv runs the Python scripts and installs their dependencies on first use.

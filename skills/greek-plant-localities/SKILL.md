@@ -80,9 +80,10 @@ It writes to `<output_root>/<Genus_species>_<date>/`:
 | `text_hits.md` / `.json` | passages that mention any of the names, from: the user's flora PDFs and Zotero; Halácsy and Boissier; the proceedings of HELECOS and the Hellenic Botanical and Forestry Societies; and ΓΕΩΤΕΕ |
 | `leads.csv` | theses, papers, treatments and datasets that mention the species |
 | `literature_localities.csv` | **empty; you fill it** (steps 3–5) |
+| `georeferenced.csv` | **empty; you fill it** (step 5): pins for records in `occurrences.csv` that have no coordinates, or wrong ones, by `record_id` |
 | `candidate_sites.csv` | 1 km clusters of precise records: candidate sampling sites |
 | `candidate_areas.csv` | 10 km clusters including generalised records: where the species is known but no precise site is published |
-| `<sp>.gpkg`, `<sp>.kml`, `<sp>_sites.gpx`, `report.md` | built outputs (GeoPackage for QGIS; KML for Google Earth or a phone; GPX for GPS units) |
+| `<sp>.gpkg`, `<sp>.kml`, `<sp>_sites.gpx`, `<sp>_approximate.gpx`, `report.md` | built outputs (GeoPackage for QGIS; KML for Google Earth or a phone; GPX for GPS units). Records are split by how far to trust the point: *precise* (source coordinates, ≤ 5 km), *placed* (pin set at the most probable place from the locality text) and *approximate* (generalised, withheld or > 5 km). They are separate GeoPackage layers and KML folders (orange or magenta, blue, grey); placed and approximate pins are also in `_approximate.gpx` |
 | `sources_log.csv` | per-source status; check it for failures |
 
 Then check `sources_log.csv`. A host that fails 2 requests in a row (timeouts or 5xx) is skipped for the rest of the run, and the log says so. If a source failed this way, re-run once with `--out <run_dir>` and `--skip` for the sources that worked; if it fails again, list it under manual follow-ups. For example, `--skip occurrences,natura,text` re-runs only the literature search, and the cache makes the rest instant.
@@ -126,7 +127,7 @@ Add the localities you extract to `literature_localities.csv`. Put the reference
 
 ## Step 5: georeferencing
 
-For records without coordinates (literature rows, and the important coordinate-less rows in `occurrences.csv`):
+For records without coordinates: literature rows, and the coordinate-less rows in `occurrences.csv`. Place every record whose locality text allows it, not just the important ones. Each placed record becomes a blue pin in the maps, so the user can see in the field where old or vague records probably were.
 
 1. Run `GPL geocode "<name>" "<Greek spelling>" "<variant>"`. Try the transliteration variants (Chelmos / Helmos / Χελμός; Killini / Kyllini / Ziria) and the feature type ("Oros Chelmos").
 2. **Old or renamed places** (Ottoman, Slavic or Arvanitic names on 19th–20th century labels): look them up in EKT Pandektis, "Name changes of settlements in Greece": https://pandektis.ekt.gr/pandektis/handle/10442/4968. Fetch it with WebFetch.
@@ -142,8 +143,11 @@ For records without coordinates (literature rows, and the important coordinate-l
    | Island | its radius |
 
    Add uncertainty for vague wording.
-5. **Record the method** in `georef_method`, e.g. "GeoNames 262178 summit; radius = massif".
-6. **Never invent coordinates.** If you cannot place a locality with confidence, leave latitude and longitude empty; the row still appears in the report.
+5. **Record the method** in `georef_method`, e.g. "GeoNames 262178 summit; radius = massif". If a paper prints coordinates, start `georef_method` with "source" (e.g. "source: UTM given"); the row is then treated as precise, not placed.
+6. **Where the pin goes:**
+   - literature localities: `literature_localities.csv`;
+   - records already in `occurrences.csv`: one row per `record_id` in `georeferenced.csv` (`record_id, latitude, longitude, uncertainty_m, georef_method, notes`). Don't copy them into `literature_localities.csv`. Use the same file to correct wrong coordinates (e.g. a mistyped latitude): start `georef_method` with "source" so that the record stays precise, and explain the correction. It survives re-runs, which rewrite `occurrences.csv`.
+7. **Never invent coordinates.** If you cannot place a locality with confidence, leave latitude and longitude empty; the row still appears in the report. Records that name only a country, a large island or a region (radius above ~25 km) aren't worth a pin.
 
 ## Step 6: build and write the synthesis
 
@@ -151,7 +155,7 @@ For records without coordinates (literature rows, and the important coordinate-l
 GPL build <run_dir>
 ```
 
-This rebuilds `candidate_sites.csv`, the GeoPackage, the KML/GPX and `report.md`, merging in your `literature_localities.csv`.
+This rebuilds `candidate_sites.csv`, the GeoPackage, the KML/GPX and `report.md`, merging in your `literature_localities.csv` and `georeferenced.csv`.
 
 Then write the synthesis in `report.md`, **only between the markers `<!-- CLAUDE-SYNTHESIS-START -->` and `<!-- CLAUDE-SYNTHESIS-END -->`**. That text survives rebuilds; anything else you write is overwritten.
 
