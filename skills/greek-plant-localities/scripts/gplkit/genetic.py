@@ -11,6 +11,10 @@ Sources:
 INSDC records rarely give a country or coordinates. For those, the title of the publication (from the ENA
 flat file) often names the place ("… from Chios Island (Greece)"), so it is used to classify the origin.
 No API key is needed for any of these.
+
+Sequence databases match bare names, without authors, so `sequence_names` leaves out the names that would
+bring in another species: names only misapplied to the taxon in Greek floras, later homonyms, and names that
+NCBI or the GBIF backbone give to a different species (see the examples there).
 """
 from __future__ import annotations
 
@@ -18,6 +22,7 @@ import csv
 import io
 import json
 import re
+import unicodedata
 import urllib.parse
 
 from . import geo, net
@@ -29,6 +34,11 @@ ENA_VIEW = "https://www.ebi.ac.uk/ena/browser/view"
 BOLD = "https://portal.boldsystems.org/api"
 BOLD_RECORD = "https://portal.boldsystems.org/record"
 GGBN = "https://www.ggbn.org/ggbn_portal/api/search"
+GBIF_SPECIES = "https://api.gbif.org/v1/species"
+GBIF_BACKBONE = "d7dddbf4-2cf0-4f39-9b2a-bb099caae36c"
+# backbone usages from the Catalogue of Life are taxonomic opinions; those from IPNI (a nomenclator) or WoRMS
+# are bare name records, all marked "accepted" (Thymus alpinus Pall., Dipsacus sylvestris Lam.)
+GBIF_COL = "7ddf754f-d193-4cc9-b351-99906754a03b"
 
 ENA_MAX = 5000  # sequences per query; more than this is a model or crop species, not a fieldwork question
 TITLE_LOOKUPS = 60  # publication titles fetched for sequences without country or coordinates
@@ -148,15 +158,100 @@ def _ena_location(loc: str):
     return (-lat if m.group(2) == "S" else lat), (-lon if m.group(4) == "W" else lon)
 
 
-# ---------------------------------------------------------------- ENA (INSDC)
-def taxids(names: dict) -> dict[str, str]:
-    """NCBI/ENA taxon IDs of the accepted name and the core names (synonyms are often separate entries)."""
-    out = {}
+# ---------------------------------------------------------------- names for sequence databases
+_NOT_AUTHORS = {"ex", "et", "in", "and", "nom", "illeg", "inval", "nud", "cons", "nov", "rej", "superfl", "sensu",
+                "auct", "non", "al", "fil", "pro", "syn"}
+
+
+def _authors(authorship: str) -> set[str]:
+    """Author names in an authorship, accents and initials dropped: '(L.) Lassen, 1989' -> {'l', 'lassen'}."""
+    s = unicodedata.normalize("NFKD", authorship or "")
+    s = "".join(c for c in s if not unicodedata.combining(c)).lower()
+    return {w for w in re.findall(r"[a-z]+", s) if w not in _NOT_AUTHORS and (len(w) > 1 or w == "l")}
+
+
+def _full_names(names: dict, n: str) -> list[str]:
+    """Flora of Greece and Euro+Med full names (with authors and status) of the name n."""
+    out = []
+    for src in ("flora_of_greece", "euromed"):
+        s = names.get(src) or {}
+        for full in list(s.get("synonyms_full") or []) + [m.get("full") or "" for m in s.get("misapplied") or []]:
+            rest = full[len(n):].strip()
+            if full.startswith(n + " ") and rest[:1] and (rest[0].isupper() or rest[0] == "("):
+                out.append(full)
+    return out
+
+
+def _homonym(n: str, fulls: list[str], accepted: str) -> str:
+    """Another species that the GBIF backbone (Catalogue of Life) accepts under the bare binomial n, by other
+    authors; '' if none."""
+    d = net.get(GBIF_SPECIES, {"name": n, "datasetKey": GBIF_BACKBONE, "limit": 20}, source="GBIF backbone") or {}
+    ours = set().union(*(_authors(f[len(n):]) for f in fulls))
+    for u in d.get("results") or []:
+        if u.get("taxonomicStatus") != "ACCEPTED" or u.get("canonicalName") != n or u.get("constituentKey") != GBIF_COL:
+            continue
+        if (u.get("species") or "") == " ".join(accepted.split()[:2]):
+            continue  # the taxon itself
+        if ours & _authors(u.get("authorship")):
+            continue  # same name and type, only another taxonomy (e.g. a segregate species): not a homonym
+        return u.get("scientificName") or n
+    return ""
+
+
+def sequence_names(names: dict) -> tuple[list[str], dict[str, str]]:
+    """The core names to search in sequence databases, and the ones left out with the reason.
+
+    Left out: names only misapplied to the taxon in Greek floras (elsewhere they are the other taxon, e.g.
+    Onosma taurica for O. erecta); later homonyms (nom. illeg.: Orchis militaris Poir. for O. italica is not
+    O. militaris L.); binomials that the GBIF backbone also accepts as a species of other authors (Centaurea
+    horrida Ten. is a synonym of C. calcitrapa, but the sequences are of C. horrida Badarò from Sardinia).
+    Names added by hand are always kept. NCBI's own synonymy is checked in taxids().
+    """
+    accepted = names.get("accepted") or ""
+    own = {accepted, " ".join((names.get("query") or "").split())}
+    kinds = {e["name"]: e.get("kinds") or [] for e in names.get("name_table") or []}
+    species = accepted.split()[:2] if len(accepted.split()) == 2 else None
+    keep, skip = [], {}
     for n in names["search_names"]:
+        k = kinds.get(n, [])
+        if n in own or "added by hand" in k or n.split()[:2] == species:  # infraspecific names of the species itself
+            keep.append(n)
+            continue
+        fulls = _full_names(names, n)
+        other = ""
+        if k and all("misapplied" in x for x in k):
+            skip[n] = "misapplied in Greek floras; elsewhere the name is another taxon"
+        elif any("nom. illeg" in f for f in fulls):
+            skip[n] = f"later homonym ({next(f for f in fulls if 'nom. illeg' in f).rstrip(' ,')})"
+        elif len(n.split()) == 2 and (other := _homonym(n, fulls, accepted)):
+            skip[n] = f"homonym: {(fulls or [n])[0]} here, but GBIF also accepts {other}"
+        else:
+            keep.append(n)
+    for n, why in skip.items():
+        net.log("genetic data", "skipped", f"name '{n}' not searched: {why}")
+    return keep, skip
+
+
+# ---------------------------------------------------------------- ENA (INSDC)
+def taxids(names: dict, use: list[str] | None = None) -> dict[str, str]:
+    """NCBI/ENA taxon IDs of the accepted name and the core names (synonyms are often separate entries).
+
+    A synonym that NCBI files under a species with none of the taxon's names is skipped (NCBI treats
+    Coronilla parviflora as Securigera parviflora, not Securigera cretica)."""
+    own = {names.get("accepted"), " ".join((names.get("query") or "").split())}
+    ours = set(names.get("extended_names") or []) | set(names["search_names"])
+    acc = (names.get("accepted") or "").split()
+    out = {}
+    for n in use if use is not None else names["search_names"]:
         d = net.get(f"{ENA_TAX}/{urllib.parse.quote(n)}", source="ENA taxonomy")
         for t in d if isinstance(d, list) else []:
             if t.get("taxId") and t.get("rank") in ("species", "subspecies", "varietas", "forma", None):
-                out[t["taxId"]] = t.get("scientificName") or n
+                sn = t.get("scientificName") or n
+                same_species = len(acc) == 2 and sn.split()[:2] == acc  # e.g. Crataegus monogyna var. monogyna
+                if n not in own and sn != n and sn not in ours and not same_species:
+                    net.log("ENA taxonomy", "skipped", f"'{n}' is {sn} ({t['taxId']}) in NCBI, another taxon: not searched")
+                    continue
+                out[t["taxId"]] = sn
     net.log("ENA taxonomy", "ok" if out else "not_found", ", ".join(f"{v} {k}" for k, v in out.items()), len(out))
     return out
 
@@ -229,10 +324,10 @@ def _ena_data(r: dict, kind: str, acc: str, marker: str, desc: str = "") -> dict
 
 
 # ---------------------------------------------------------------- BOLD
-def bold(names: dict) -> list[dict]:
+def bold(names: dict, use: list[str] | None = None) -> list[dict]:
     """Public BOLD records (no API key) for every core name that BOLD knows."""
     out, seen = [], set()
-    for n in names["search_names"]:
+    for n in use if use is not None else names["search_names"]:
         pre = net.get(f"{BOLD}/query/preprocessor", {"query": f"tax:{n}"}, source="BOLD") or {}
         matched = [t.get("matched") for t in pre.get("successful_terms") or [] if t.get("matched")]
         if not matched:
@@ -283,7 +378,12 @@ def ggbn_counts(names: dict) -> dict[str, dict]:
 # ---------------------------------------------------------------- all
 def harvest(names: dict) -> tuple[list[dict], dict]:
     rows = []
-    for f in (lambda: ena(names, taxids(names)), lambda: bold(names)):
+    try:
+        use, _ = sequence_names(names)
+    except Exception as e:
+        net.log("genetic data", "error", f"name check: {type(e).__name__}: {e}")
+        use = names["search_names"]
+    for f in (lambda: ena(names, taxids(names, use)), lambda: bold(names, use)):
         try:
             rows += f()
         except Exception as e:  # one broken source must not stop the run

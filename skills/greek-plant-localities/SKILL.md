@@ -46,6 +46,7 @@ It prints the accepted name (Flora of Greece) and a table of every name with its
   - Flora of Greece and Euro+Med synonyms
   - names that Flora of Greece says were **misapplied in Greek floras** ("auct. fl. graec."). Greek literature and herbaria often file the taxon under exactly these names, e.g. *Acinos rotundifolius* and *Calamintha exigua* for *Acinos graveolens*.
 - **extended** names are used only by the fast searches (GBIF, DiSSCo Hellas, JACQ, Natura 2000, full text): GBIF and Catalogue of Life (WCVP) synonyms, including the synonyms of subspecies.
+- **Sequence databases** (ENA/GenBank, BOLD) match bare names, so they get the core names minus those that would bring in another species: names only misapplied in Greek floras, later homonyms (*nom. illeg.*), binomials that the Catalogue of Life also accepts as a species of other authors (*Centaurea horrida* Ten., a synonym of *C. calcitrapa*, vs the Sardinian *C. horrida* Badarò), and names that NCBI files under another species. Each skipped name is listed in the report's source table; names added by hand are always searched.
 
 Review the list:
 - **Warnings.** If Flora of Greece does not know the name, or GBIF's match is not `EXACT`, tell the user which name is used. If Flora of Greece gives no Greek distribution, say so but continue.
