@@ -149,7 +149,7 @@ def _pdf_pages(path: Path) -> list[str]:
     with fitz.open(path) as doc:
         pages = [p.get_text() for p in doc]
     cp.parent.mkdir(parents=True, exist_ok=True)
-    cp.write_text(json.dumps(pages, ensure_ascii=False), encoding="utf-8")
+    net.atomic_write(cp, json.dumps(pages, ensure_ascii=False))
     return pages
 
 
@@ -220,7 +220,7 @@ def _ia_text(identifier: str) -> list[str] | None:
         if not txt:
             return None
         cp.parent.mkdir(parents=True, exist_ok=True)
-        cp.write_text(txt, encoding="utf-8")
+        net.atomic_write(cp, txt)
     text = cp.read_text(encoding="utf-8")
     # djvu.txt has form feeds between pages in most items; fall back to fixed chunks
     pages = text.split("\f") if text.count("\f") > 20 else [text[i:i + 4000] for i in range(0, len(text), 4000)]
@@ -257,7 +257,7 @@ def _remote_pdf_pages(url: str, label: str) -> list[str] | None:
         return None
     if sum(len(p) for p in pages) < 200 * max(1, len(pages)):
         net.log("Proceedings corpus", "warning", f"{label}: scanned without text layer (needs OCR)")
-    cp.write_text(json.dumps(pages, ensure_ascii=False), encoding="utf-8")
+    net.atomic_write(cp, json.dumps(pages, ensure_ascii=False))
     return pages
 
 

@@ -121,21 +121,22 @@ def _gbif_other_keys(names: dict, key: int) -> dict[int, str]:
 
 def gbif(names: dict) -> list[dict]:
     key = names.get("gbif_taxon_key")
-    if not key:
-        net.log("GBIF", "skipped", "no GBIF taxon key")
-        return []
-    recs, count = _gbif_page({"taxonKey": key, "country": "GR"}, "GBIF")
-    if count and count > GBIF_MAX:
-        net.log("GBIF", "truncated", f"{count} records; only {GBIF_MAX} fetched. Use the GBIF download API (DOI) for the full set.")
-    # Records inside Greece with no/unknown country code are missed by country=GR.
-    extra, _ = _gbif_page({"taxonKey": key, "geometry": GREECE_WKT}, "GBIF (no country code)")
-    seen = {r["key"] for r in recs}
-    recs += [r for r in extra if r["key"] not in seen and r.get("countryCode") in (None, "", "ZZ")]
+    recs, count, seen = [], 0, set()
+    if key:
+        recs, count = _gbif_page({"taxonKey": key, "country": "GR"}, "GBIF")
+        if count and count > GBIF_MAX:
+            net.log("GBIF", "truncated", f"{count} records; only {GBIF_MAX} fetched. Use the GBIF download API (DOI) for the full set.")
+        # Records inside Greece with no/unknown country code are missed by country=GR.
+        extra, _ = _gbif_page({"taxonKey": key, "geometry": GREECE_WKT}, "GBIF (no country code)")
+        seen = {r["key"] for r in recs}
+        recs += [r for r in extra if r["key"] not in seen and r.get("countryCode") in (None, "", "ZZ")]
+    else:
+        net.log("GBIF", "skipped", "no species-level GBIF taxon key; each name searched on its own")
     via = {}
     for k, n in _gbif_other_keys(names, key).items():
         c = (net.get("https://api.gbif.org/v1/occurrence/search", {"taxonKey": k, "country": "GR", "limit": 0},
                      source="GBIF (other names)") or {}).get("count", 0)
-        if c > max(500, 3 * (count or 0)):
+        if key and c > max(500, 3 * (count or 0)):  # without a main key, every curated name is the taxon itself
             net.log("GBIF (other names)", "skipped", f"'{n}' (taxonKey {k}): {c} Greek records, too many for a synonym; check by hand")
             continue
         more, _ = _gbif_page({"taxonKey": k, "country": "GR"}, "GBIF (other names)") if c else ([], 0)

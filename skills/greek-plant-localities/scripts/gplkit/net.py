@@ -6,7 +6,9 @@ are recorded in `LOG`, which the CLI writes to `sources_log.csv`.
 """
 from __future__ import annotations
 
+import fcntl
 import hashlib
+import os
 import json
 import time
 import urllib.parse
@@ -60,11 +62,48 @@ def _delay_for(host: str) -> float:
     return DEFAULT_DELAY
 
 
-def _throttle(host: str) -> None:
-    wait = _delay_for(host) - (time.monotonic() - _last_hit.get(host, 0.0))
+class _HostLock:
+    """Cross-process per-host mutex (batch runs: several gpl processes share one politeness budget per host)."""
+    def __init__(self, host: str):
+        self.host = host
+
+    def __enter__(self):
+        d = config.cache_dir() / "hostlocks"
+        d.mkdir(parents=True, exist_ok=True)
+        self.f = open(d / self.host.replace(":", "_"), "a+")
+        fcntl.flock(self.f, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *exc):
+        fcntl.flock(self.f, fcntl.LOCK_UN)
+        self.f.close()
+
+
+def _throttle_locked(host: str, f) -> None:
+    """Wait until the host's minimum delay has passed since the last request from any process."""
+    f.seek(0)
+    try:
+        last = float(f.read().strip() or 0)
+    except ValueError:
+        last = 0.0
+    wait = _delay_for(host) - (time.time() - last)
     if wait > 0:
         time.sleep(wait)
-    _last_hit[host] = time.monotonic()
+    f.seek(0)
+    f.truncate()
+    f.write(repr(time.time()))
+    f.flush()
+
+
+def _throttle(host: str) -> None:
+    with _HostLock(host) as h:
+        _throttle_locked(host, h.f)
+
+
+def atomic_write(path: Path, text: str) -> None:
+    tmp = path.with_name(f"{path.name}.tmp{os.getpid()}")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def _cache_path(key: str) -> Path:
@@ -92,11 +131,15 @@ def get(url: str, params: dict | None = None, *, source: str, as_json: bool = Tr
         return None
     last_err = ""
     for attempt in range(retries + 1):
-        _throttle(host)
-        try:
-            r = session().request(method, full, headers=headers, timeout=timeout, data=data)
-        except requests.RequestException as e:
-            last_err = f"{type(e).__name__}: {e}"
+        err = None
+        with _HostLock(host) as h:  # one request in flight per host, across processes
+            _throttle_locked(host, h.f)
+            try:
+                r = session().request(method, full, headers=headers, timeout=timeout, data=data)
+            except requests.RequestException as e:
+                err = e
+        if err is not None:
+            last_err = f"{type(err).__name__}: {err}"
             time.sleep(2 * (attempt + 1))
             continue
         if r.status_code == 429 or r.status_code >= 500:
@@ -104,6 +147,11 @@ def get(url: str, params: dict | None = None, *, source: str, as_json: bool = Tr
             time.sleep(5 * (attempt + 1))
             continue
         _failures[host] = 0  # the host answered, so it is not down
+        if r.status_code == 403:
+            _failures[host] = HOST_DOWN_AFTER  # forbidden / bot wall: stop asking this host for the rest of the run
+            wall = "Cloudflare challenge" if "cloudflare" in r.text[:3000].lower() else "HTTP 403"
+            log(source, "blocked", f"{wall} at {host}: skipped for the rest of this run ({full})")
+            return None
         if r.status_code >= 400:
             log(source, "error", f"HTTP {r.status_code} {full}")
             return None
@@ -119,7 +167,7 @@ def get(url: str, params: dict | None = None, *, source: str, as_json: bool = Tr
             return None
         if cache:
             cp.parent.mkdir(parents=True, exist_ok=True)
-            cp.write_text(text, encoding="utf-8")
+            atomic_write(cp, text)
         return out
     log(source, "error", f"{last_err} {full}")
     if last_err == "HTTP 429":

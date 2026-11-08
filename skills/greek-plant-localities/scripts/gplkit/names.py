@@ -169,6 +169,10 @@ def gbif(name: str) -> dict:
     if not m or m.get("matchType") == "NONE":
         net.log("GBIF backbone", "not_found", name)
         return {"source": "GBIF backbone", "found": False}
+    if m.get("matchType") == "HIGHERRANK":  # e.g. only the genus: its key would bring in the whole genus
+        net.log("GBIF backbone", "not_found", f"{name}: only matched {m.get('rank')} {m.get('canonicalName')}")
+        return {"source": "GBIF backbone", "found": False, "matchType": "HIGHERRANK",
+                "note": f"only matched {m.get('rank')} {m.get('canonicalName')}"}
     key = m.get("acceptedUsageKey") or m["usageKey"]
     info = net.get(f"{GBIF}/species/{key}", source="GBIF backbone") or {}
     syns, offset = [], 0
@@ -246,6 +250,14 @@ def resolve(name: str, add=(), drop=()) -> dict:
         note(m["name"], "Flora of Greece", "misapplied in Greek floras", "core")
     for m in em.get("misapplied", []):
         note(m["name"], "Euro+Med", "misapplied", "extended")
+    if not gb.get("found"):
+        # GBIF does not know the accepted name at its rank: use the first curated synonym that GBIF matches
+        # exactly and accepts at the same rank (a subspecies must not fall back to its whole species)
+        for n in [e["name"] for e in table.values() if e["tier"] == "core" and e["name"] != accepted]:
+            g = gbif(n)
+            if g.get("found") and g.get("matchType") == "EXACT" and len((g.get("accepted") or "").split()) == len(accepted.split()):
+                gb = dict(g, via=n)
+                break
     if gb.get("accepted"):
         note(gb["accepted"], "GBIF", "accepted", "extended")
     for n in gb.get("synonyms", []):
