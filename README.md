@@ -73,6 +73,7 @@ On first use the skill asks you once for:
 - a contact email (sent in the User-Agent, as the APIs request)
 - an optional [GeoNames](https://www.geonames.org/login) username
 - any private flora PDFs or Zotero collections to search
+- optionally, a local copy of the [BOLD public data package](https://bench.boldsystems.org/index.php/datapackages/Latest) (Parquet; free login), searched instead of the BOLD API, which blocks clients that send many queries: `gpl.py config --bold-snapshot /path/BOLD_Public.<date>.parquet`
 
 These are stored in `~/.config/greek-plant-localities/config.json`.
 

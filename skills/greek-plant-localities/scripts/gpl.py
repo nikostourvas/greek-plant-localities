@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["requests>=2.31", "beautifulsoup4>=4.12", "pymupdf>=1.24"]
+# dependencies = ["requests>=2.31", "beautifulsoup4>=4.12", "pymupdf>=1.24", "duckdb>=1.0"]
 # ///
 """greek-plant-localities: find known localities of a plant species in Greece.
 
@@ -180,7 +180,13 @@ def cmd_config(a):
         cfg["zotero_collections"] = sorted(set(cfg.get("zotero_collections", [])) | {z})
     if a.zotero_dir:
         cfg["zotero_data_dir"] = a.zotero_dir
-    if any([a.email, a.geonames, a.openalex_key, a.output_root, a.add_pdf, a.add_zotero, a.zotero_dir]) or not config.exists():
+    if a.bold_snapshot is not None:  # "" switches back to the BOLD API
+        p = Path(a.bold_snapshot).expanduser() if a.bold_snapshot else None
+        if p and not p.exists():
+            sys.exit(f"no such file: {p}")
+        cfg["bold_snapshot"] = str(p.absolute()) if p else ""
+    if any([a.email, a.geonames, a.openalex_key, a.output_root, a.add_pdf, a.add_zotero, a.zotero_dir,
+            a.bold_snapshot is not None]) or not config.exists():
         p = config.save(cfg)
         print(f"saved {p}", file=sys.stderr)
     print(json.dumps(cfg, indent=2, ensure_ascii=False))
@@ -405,6 +411,8 @@ def main():
     c.add_argument("--add-pdf", action="append")
     c.add_argument("--add-zotero", action="append")
     c.add_argument("--zotero-dir")
+    c.add_argument("--bold-snapshot", metavar="PARQUET",
+                   help="local BOLD public data package, searched instead of the BOLD API ('' to switch back)")
     c.set_defaults(func=cmd_config)
     a = p.parse_args()
     a.func(a)

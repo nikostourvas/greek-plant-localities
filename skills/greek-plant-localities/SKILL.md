@@ -33,6 +33,8 @@ Then start `GPL corpus` in the background. It is a one-off download of the publi
 After that, never ask again; runs are fully automatic.
 The config file is `~/.config/greek-plant-localities/config.json`.
 
+**BOLD data package (optional).** The BOLD portal API blocks clients that send many queries (Cloudflare), so batch runs often lose BOLD. If that happens, or before a batch, suggest a local copy of the BOLD public data package. The user downloads it: they log in at https://bench.boldsystems.org/index.php/datapackages/Latest (free account) and choose the Parquet file (about 2.5 GB). Never ask for their BOLD password; if they paste a download link, it is theirs to use. Then `GPL config --bold-snapshot /path/BOLD_Public.<date>.parquet`; runs search it instead of the API, and the report names the package. Weekly packages stay online for a year, quarterly ones for good and have a DOI (cite those). The report warns when the package is more than 120 days old.
+
 ## Step 1: find all the names first
 
 Herbarium labels, floras and theses often use old or misapplied names, so collect every name before searching.

@@ -37,7 +37,7 @@ def write_text_hits_md(path: Path, hits: list[dict]) -> None:
     path.write_text("".join(parts), encoding="utf-8")
 
 
-def _genetic_section(sites, seqs, ggbn, leads) -> str:
+def _genetic_section(sites, seqs, ggbn, leads, log=None) -> str:
     from .literature import is_genetic  # also flags leads.csv files written before the `genetic` column existed
     seqs = seqs or []
     by_kind = collections.Counter(f"{q.get('source')} {q.get('kind')}" for q in seqs)
@@ -52,6 +52,10 @@ def _genetic_section(sites, seqs, ggbn, leads) -> str:
     abroad = collections.Counter((q.get("country") or "?").split(":")[0].strip() for q in seqs if q.get("origin") == "foreign")
     gen_leads = [l for l in leads or [] if l.get("genetic") == "yes" or is_genetic(l)]
     g = "; ".join(f"{k}: {', '.join(f'{t} {n}' for t, n in v.items())}" for k, v in (ggbn or {}).items()) or "—"
+    pkg = next((r["detail"].split("package ", 1)[1] for r in log or []
+                if r.get("source") == "BOLD" and r.get("status") == "ok" and "data package" in (r.get("detail") or "")), "")
+    bold_src = (f"\n- **BOLD:** from the local data package `{pkg}`. To cite BOLD, use the quarterly release "
+                "closest to it, which has a DOI.") if pkg else ""
     return f"""## Genetic data
 
 Sequences, read runs and assemblies in ENA/GenBank (INSDC) and barcodes in BOLD, worldwide; `origin` says whether
@@ -63,7 +67,7 @@ countries are in a folder that starts switched off.
 - **Origin:** {', '.join(f'{k} {v}' for k, v in by_origin.most_common()) or '—'}. "Greece (publication)" means the record has no country or coordinates but its publication's title names Greece or a Greek place.
 - **From other countries:** {', '.join(f'{k} {v}' for k, v in abroad.most_common()) or 'none'}.
 - **Sites with genetic data:** {n_same} of {len(sites)} candidate sites have DNA from their own specimens; {n_near_only} more have DNA only nearby.
-- **DNA and tissue banks (GGBN, per genus; no localities):** {g}. Search https://www.ggbn.org/ggbn_portal/ for the samples.
+- **DNA and tissue banks (GGBN, per genus; no localities):** {g}. Search https://www.ggbn.org/ggbn_portal/ for the samples.{bold_src}
 
 Two kinds of match, kept apart in every table, map and description:
 
@@ -81,7 +85,7 @@ publication or the voucher to find where they were collected.
 
 {_md_table(gen_leads, ["year", "title", "authors", "url"], 30)}
 To download the sequences: accessions go into Biopython (`Bio.Entrez.efetch`), EDirect (`efetch -db nuccore`) or ENA's `enaDataGet`;
-BOLD process IDs into BOLDconnectR (`bold.fetch`) or the BOLD portal.
+BOLD process IDs (`sequence_id` before the dot) into BOLDconnectR (`bold.fetch`) or the BOLD portal.
 
 """
 
@@ -165,7 +169,7 @@ These are areas where the species is known but no precise site is published: con
 Their locality text is in `occurrences.csv`. Pins for coordinate-less records go in `georeferenced.csv` with their `record_id` (SKILL.md, step 5).
 In the maps, placed pins are blue and approximate ones grey (GeoPackage layers `occurrences_placed` and `occurrences_approximate`; in the GPX, blue and green waypoints).
 
-{_genetic_section(sites, seqs, ggbn, leads)}## Natura 2000 sites listing the species ({len(n2k)})
+{_genetic_section(sites, seqs, ggbn, leads, log)}## Natura 2000 sites listing the species ({len(n2k)})
 
 {_md_table(n2k, ["site_code", "site_name", "population_rating", "pop_min", "pop_max", "unit", "data_quality", "sdf_url"])}
 Article 17 (2019–2024) distribution: {'see layer `art17_distribution` in the GeoPackage' if has_art17 else 'not available (species not in the Habitats Directive annexes, or sensitive)'}.

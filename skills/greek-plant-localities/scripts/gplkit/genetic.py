@@ -4,7 +4,9 @@ Sources:
 - ENA Portal API: all INSDC data (GenBank, ENA and DDBJ exchange daily), i.e. sequences, read runs (SRA),
   samples (BioSample) and assemblies. Queried by NCBI taxon ID, worldwide; every record is kept and `origin`
   says whether it comes from Greece.
-- BOLD v5 public portal API: barcodes, often with coordinates; many are not in INSDC.
+- BOLD: barcodes, often with coordinates; many are not in INSDC. From a local copy of the BOLD public data
+  package (Parquet, `bold_snapshot` in the config) when there is one, else from the v5 public portal API,
+  which blocks clients that send many queries (Cloudflare).
 - GGBN: DNA and tissue bank holdings, counts per genus only (record-level GGBN data come through GBIF,
   see `dna` in occurrences.py).
 
@@ -19,13 +21,16 @@ NCBI or the GBIF backbone give to a different species (see the examples there).
 from __future__ import annotations
 
 import csv
+import datetime as dt
 import io
 import json
 import re
 import unicodedata
 import urllib.parse
 
-from . import geo, net
+from pathlib import Path
+
+from . import config, geo, net
 
 ENA_TAX = "https://www.ebi.ac.uk/ena/taxonomy/rest/any-name"
 ENA_SEARCH = "https://www.ebi.ac.uk/ena/portal/api/search"
@@ -33,6 +38,8 @@ ENA_EMBL = "https://www.ebi.ac.uk/ena/browser/api/embl"
 ENA_VIEW = "https://www.ebi.ac.uk/ena/browser/view"
 BOLD = "https://portal.boldsystems.org/api"
 BOLD_RECORD = "https://portal.boldsystems.org/record"
+BOLD_PACKAGES = "https://bench.boldsystems.org/index.php/datapackages/Latest"
+BOLD_SNAPSHOT_MAX_AGE = 120  # days; weekly packages stay online for a year, quarterly ones for good
 GGBN = "https://www.ggbn.org/ggbn_portal/api/search"
 GBIF_SPECIES = "https://api.gbif.org/v1/species"
 GBIF_BACKBONE = "d7dddbf4-2cf0-4f39-9b2a-bb099caae36c"
@@ -324,10 +331,41 @@ def _ena_data(r: dict, kind: str, acc: str, marker: str, desc: str = "") -> dict
 
 
 # ---------------------------------------------------------------- BOLD
+def _bold_row(r: dict) -> dict:
+    """One sequence of a BOLD record (BCDM fields, as in the portal TSV and the data package)."""
+    pid = r.get("processid")
+    m = re.match(r"\[\s*([-\d.]+)\s*,\s*([-\d.]+)\s*\]", str(r.get("coord") or ""))
+    det = r.get("identified_by")
+    cf = "cf." in (r.get("identification") or "").split()
+    return {"sequence_id": r.get("record_id") or pid,  # processid.marker: one row per marker
+            "source": "BOLD", "kind": "barcode",
+            "scientific_name": r.get("species") or r.get("identification"),
+            "marker": r.get("marker_code") or "?", "country": r.get("country/ocean"),
+            "locality": ", ".join(str(x) for x in (r.get("province/state"), r.get("region"), r.get("site")) if x),
+            "latitude": m.group(1) if m else "", "longitude": m.group(2) if m else "",
+            "specimen_voucher": r.get("museumid") or r.get("sampleid"), "institution": r.get("inst"),
+            "collector": r.get("collectors"), "field_id": r.get("fieldid"),
+            "collection_date": r.get("collection_date_start"), "bin": r.get("bin_uri"),
+            "insdc": r.get("insdc_acs"),
+            "description": "; ".join(x for x in (det and f"det. {det}", cf and f"identified as {r['identification']}") if x),
+            "url": f"{BOLD_RECORD}/{pid}"}
+
+
 def bold(names: dict, use: list[str] | None = None) -> list[dict]:
-    """Public BOLD records (no API key) for every core name that BOLD knows."""
+    """Public BOLD records for every core name: from the local data package if configured, else the portal API."""
+    use = use if use is not None else names["search_names"]
+    snap = config.load().get("bold_snapshot")
+    if snap:
+        p = Path(snap).expanduser()
+        if not p.exists():
+            net.log("BOLD", "error", f"data package {p} not found; using the portal API")
+        else:
+            try:
+                return bold_snapshot(p, use)
+            except Exception as e:  # e.g. a truncated download
+                net.log("BOLD", "error", f"data package {p.name}: {type(e).__name__}: {e}; using the portal API")
     out, seen = [], set()
-    for n in use if use is not None else names["search_names"]:
+    for n in use:
         pre = net.get(f"{BOLD}/query/preprocessor", {"query": f"tax:{n}"}, source="BOLD") or {}
         matched = [t.get("matched") for t in pre.get("successful_terms") or [] if t.get("matched")]
         if not matched:
@@ -337,22 +375,60 @@ def bold(names: dict, use: list[str] | None = None) -> list[dict]:
             continue
         tsv = net.get(f"{BOLD}/documents/{q['query_id']}/download", {"format": "tsv"}, source="BOLD", as_json=False)
         for r in csv.DictReader(io.StringIO(tsv or ""), delimiter="\t"):
-            pid = r.get("processid")
-            if not pid or pid in seen:
+            sid = r.get("record_id") or r.get("processid")
+            if not sid or sid in seen:
                 continue
-            seen.add(pid)
-            m = re.match(r"\[\s*([-\d.]+)\s*,\s*([-\d.]+)\s*\]", r.get("coord") or "")
-            out.append({"sequence_id": pid, "source": "BOLD", "kind": "barcode",
-                        "scientific_name": r.get("species") or r.get("identification"),
-                        "marker": r.get("marker_code") or "?", "country": r.get("country/ocean"),
-                        "locality": ", ".join(filter(None, [r.get("province/state"), r.get("region"), r.get("site")])),
-                        "latitude": m.group(1) if m else "", "longitude": m.group(2) if m else "",
-                        "specimen_voucher": r.get("museumid") or r.get("sampleid"), "institution": r.get("inst"),
-                        "collector": r.get("collectors"), "field_id": r.get("fieldid"),
-                        "collection_date": r.get("collection_date_start"), "bin": r.get("bin_uri"),
-                        "insdc": r.get("insdc_acs"), "description": r.get("identified_by") and f"det. {r['identified_by']}",
-                        "url": f"{BOLD_RECORD}/{pid}"})
+            seen.add(sid)
+            out.append(_bold_row(r))
     net.log("BOLD", "ok", "public portal API", len(out))
+    return out
+
+
+_RANKS = {"subsp.", "subsp", "ssp.", "ssp", "var.", "var", "f.", "forma", "subvar.", "nothosubsp.", "convar."}
+
+
+def _bold_key(name: str) -> str:
+    """'Sideritis syriaca subsp. syriaca' and BOLD's 'Sideritis syriaca syriaca' -> 'sideritis syriaca syriaca'"""
+    name = re.sub(r"\bcf\.?\s", "", str(name or "")).lower().replace("×", "x ")
+    return " ".join(w for w in name.split() if w not in _RANKS)
+
+
+def bold_snapshot(path: Path, use: list[str]) -> list[dict]:
+    """BOLD records of the names from a local BOLD public data package (Parquet, from BOLD_PACKAGES; free login).
+
+    A record matches when its identification, subspecies or species is one of the names (rank words ignored;
+    "cf." kept, "aff." left out, as it means a related species). Records without a public sequence are left out.
+    """
+    import duckdb  # only needed for the data package
+
+    keys = {_bold_key(n) for n in use}
+    genera = sorted({n.split()[0] for n in use if n.split()})
+    cols = ", ".join(f'"{c}"' for c in (
+        "processid", "record_id", "sampleid", "fieldid", "museumid", "inst", "species", "subspecies", "identification",
+        "identified_by", "bin_uri", "marker_code", "nuc_basecount", "insdc_acs", "country/ocean", "province/state",
+        "region", "site", "coord", "collectors", "collection_date_start"))
+    cur = duckdb.connect().execute(
+        f"SELECT {cols} FROM read_parquet(?) WHERE kingdom = 'Plantae' AND genus IN ({', '.join('?' * len(genera))})",
+        [str(path), *genera])
+    fields = [d[0] for d in cur.description]
+    out = []
+    for r in (dict(zip(fields, row)) for row in cur.fetchall()):
+        ident, sp, ssp = r.get("identification") or "", r.get("species") or "", r.get("subspecies") or ""
+        if not r.get("marker_code") and not r.get("nuc_basecount"):
+            continue  # specimen record whose sequence is not public
+        if {"aff.", "aff"} & set(ident.lower().split()):
+            continue
+        if ssp and len(ssp.split()) == 1 and sp:
+            ssp = f"{sp} {ssp}"
+        if any(_bold_key(c) in keys for c in (ident, ssp, sp) if c):
+            out.append(_bold_row(r))
+    pkg = re.sub(r"\.parquet$", "", path.name)
+    net.log("BOLD", "ok", f"local data package {pkg}", len(out))
+    m = re.search(r"(\d{2}-[A-Z][a-z]{2}-\d{4})", pkg)
+    if m:
+        age = (dt.date.today() - dt.datetime.strptime(m.group(1), "%d-%b-%Y").date()).days
+        if age > BOLD_SNAPSHOT_MAX_AGE:
+            net.log("BOLD", "warning", f"data package {pkg} is {age} days old; download a newer one from {BOLD_PACKAGES}")
     return out
 
 

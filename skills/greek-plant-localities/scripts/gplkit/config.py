@@ -20,6 +20,7 @@ DEFAULTS = {
     "zotero_collections": [],     # Zotero collection names whose PDFs are searched
     "zotero_data_dir": "~/Zotero",
     "output_root": "~/greek-plant-localities",
+    "bold_snapshot": "",          # local BOLD public data package (.parquet); used instead of the BOLD API
 }
 
 
